@@ -8,7 +8,6 @@
  *     background script as an AUDIO_CHUNK message.
  */
 
-import type { AudioChunkMessage } from "./messages";
 
 // ─────────────────────────────────────────────
 // Platform detection
@@ -40,79 +39,82 @@ function detectPlatform(): MeetingPlatform {
 // Audio recording
 // ─────────────────────────────────────────────
 
-const CHUNK_INTERVAL_MS = 2_000; // emit a chunk every 2 seconds
+const CHUNK_INTERVAL_MS = 2_000; // duration of each standalone WebM file
 const AUDIO_MIME_TYPE = "audio/webm;codecs=opus"; // broad browser support
 
-let mediaRecorder: MediaRecorder | null = null;
 let mediaStream: MediaStream | null = null;
 let sequenceId = 0;
+let isRecording = false; // guards the recursive stop/start loop
 
 /**
- * Requests microphone access, wires up MediaRecorder, and starts
- * emitting AUDIO_CHUNK messages to the background script.
+ * WHY STOP/START INSTEAD OF timeslice?
+ *
+ * Chrome's MediaRecorder emits a valid WebM header only in the FIRST
+ * ondataavailable chunk when using MediaRecorder.start(timeslice).
+ * Every subsequent chunk is a raw continuation fragment that STT
+ * services cannot parse as a standalone file.
+ *
+ * Fix: spin up a fresh MediaRecorder for every 2-second window so that
+ * each Blob begins with its own valid WebM EBML header.
  */
-async function startRecording(): Promise<void> {
-  console.log("[content] Requesting microphone access…");
 
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 16_000, // 16 kHz is typical for STT pipelines
-      },
-      video: false,
-    });
-  } catch (err) {
-    console.error("[content] getUserMedia failed:", err);
-    return;
-  }
+/**
+ * Records exactly CHUNK_INTERVAL_MS of audio, assembles a complete
+ * standalone WebM Blob, ships it to the background script, then
+ * immediately starts the next recording cycle — as long as isRecording
+ * is still true.
+ */
+function recordChunk(): void {
+  if (!mediaStream || !isRecording) return;
 
-  console.log("[content] Microphone access granted. Starting MediaRecorder.");
-
-  // Prefer the explicit MIME type; fall back to browser default if unsupported.
+  // Prefer the requested codec; fall back gracefully if unsupported.
   const mimeType = MediaRecorder.isTypeSupported(AUDIO_MIME_TYPE)
     ? AUDIO_MIME_TYPE
     : "";
 
-  mediaRecorder = new MediaRecorder(mediaStream, {
-    ...(mimeType ? { mimeType } : {}),
-  });
+  const recorder = new MediaRecorder(
+    mediaStream,
+    mimeType ? { mimeType } : {}
+  );
 
-  // ── ondataavailable fires every CHUNK_INTERVAL_MS ──────────────────────
-  mediaRecorder.ondataavailable = (event: BlobEvent) => {
-    if (!event.data || event.data.size === 0) {
-      console.warn("[content] Received empty audio chunk — skipping.");
-      return;
-    }
+  const chunks: Blob[] = [];
 
+  // Collect all data fragments emitted during this recording window.
+  recorder.ondataavailable = (e: BlobEvent) => {
+    if (e.data.size > 0) chunks.push(e.data);
+  };
+
+  // onstop fires after recorder.stop() — all fragments are guaranteed
+  // to be in `chunks` at this point.
+  recorder.onstop = async () => {
     const currentId = sequenceId++;
 
+    // Combine fragments into ONE complete, self-contained WebM file.
+    const blob = new Blob(chunks, {
+      type: mimeType || "audio/webm",
+    });
+
     console.log(
-      `[content] Audio chunk ready | seq=${currentId} | size=${event.data.size}B | mime=${event.data.type}`
+      `[content] Chunk complete | seq=${currentId} | size=${blob.size}B | mime=${blob.type}`
     );
 
-    const message: AudioChunkMessage = {
-      type: "AUDIO_CHUNK",
-      audio: event.data,
-      sequence_id: currentId,
-      speaker: "candidate",
-    };
+    if (blob.size === 0) {
+      console.warn(`[content] Empty blob for seq=${currentId} — skipping.`);
+    } else {
+      // Blobs are not structured-cloneable; serialise to ArrayBuffer.
+      const buffer = await blob.arrayBuffer();
 
-    // Blobs are not directly serialisable over the chrome message bus.
-    // Convert to an ArrayBuffer first; the background script reassembles
-    // it into a Blob with the correct MIME type.
-    event.data.arrayBuffer().then((buffer) => {
       chrome.runtime.sendMessage(
         {
-          ...message,
-          // Replace Blob with a plain transferable object
-          audio: { buffer, mimeType: event.data.type },
+          type: "AUDIO_CHUNK",
+          audio: { buffer, mimeType: blob.type },
+          sequence_id: currentId,
+          speaker: "candidate",
         },
         (response) => {
           if (chrome.runtime.lastError) {
             console.error(
-              "[content] sendMessage error:",
+              `[content] sendMessage error for seq=${currentId}:`,
               chrome.runtime.lastError.message
             );
           } else {
@@ -123,44 +125,70 @@ async function startRecording(): Promise<void> {
           }
         }
       );
-    });
+    }
+
+    // Kick off the next standalone recording window immediately.
+    recordChunk();
   };
 
-  // ── lifecycle logs ────────────────────────────────────────────────────
-  mediaRecorder.onstart = () =>
-    console.log("[content] MediaRecorder started.");
+  recorder.onerror = (e) =>
+    console.error("[content] MediaRecorder error:", e);
 
-  mediaRecorder.onstop = () =>
-    console.log("[content] MediaRecorder stopped.");
+  recorder.start(); // no timeslice — collect all data until stop()
+  console.log(`[content] Recording window started (${CHUNK_INTERVAL_MS}ms)…`);
 
-  mediaRecorder.onerror = (event) =>
-    console.error("[content] MediaRecorder error:", event);
-
-  // Start recording; raise a dataavailable event every CHUNK_INTERVAL_MS
-  mediaRecorder.start(CHUNK_INTERVAL_MS);
-  console.log(
-    `[content] Recording… chunks every ${CHUNK_INTERVAL_MS / 1_000}s.`
-  );
+  // Schedule the stop; onstop will chain the next recordChunk() call.
+  setTimeout(() => {
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  }, CHUNK_INTERVAL_MS);
 }
 
 /**
- * Cleanly stops the MediaRecorder and releases the microphone track.
+ * Requests microphone access and kicks off the first recording window.
+ */
+async function startRecording(): Promise<void> {
+  console.log("[content] Requesting microphone access…");
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16_000, // 16 kHz is standard for STT pipelines
+      },
+      video: false,
+    });
+  } catch (err) {
+    console.error("[content] getUserMedia failed:", err);
+    return;
+  }
+
+  console.log(
+    "[content] Microphone access granted. Starting independent-chunk recorder."
+  );
+
+  isRecording = true;
+  recordChunk(); // begin the first 2-second window
+}
+
+/**
+ * Signals the recording loop to stop after the current window finishes,
+ * then releases all microphone tracks.
  */
 function stopRecording(): void {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    mediaRecorder.stop();
-    console.log("[content] MediaRecorder stopped by cleanup.");
-  }
+  isRecording = false; // prevents recordChunk() from re-scheduling itself
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((track) => {
       track.stop();
-      console.log(`[content] Media track stopped: ${track.kind} (${track.id})`);
+      console.log(`[content] Media track released: ${track.kind} (${track.id})`);
     });
     mediaStream = null;
   }
 
-  mediaRecorder = null;
+  console.log("[content] Recording stopped.");
 }
 
 // ─────────────────────────────────────────────
