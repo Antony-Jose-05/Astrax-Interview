@@ -1,0 +1,76 @@
+{
+  "analysis": {
+    "follow_up_questions": [
+      {
+        "question": "You mentioned using Alembic — but then corrected to Flask. Can you clarify which framework your team actually uses for migrations, and walk me through your migration workflow?",
+        "intent": "verify_claim",
+        "triggered_by": "We use Alembic for Django. I mean, we use it for our Flask app."
+      },
+      {
+        "question": "You said you wrote all the migration tooling yourself. What specific problem did existing tools not solve, and what does your custom tooling do differently?",
+        "intent": "probe_depth",
+        "triggered_by": "I wrote all the migration tooling myself"
+      },
+      {
+        "question": "What does zero-downtime deployment look like in practice for a schema change that renames a column?",
+        "intent": "test_edge_case",
+        "triggered_by": "We have zero-downtime deploys"
+      }
+    ],
+    "vagueness_detected": true,
+    "vagueness_reason": "Candidate self-corrected mid-sentence (Django → Flask) suggesting uncertainty. Claims of writing all tooling are unverified and lack specifics.",
+
+    "contradiction_alerts": {
+      "items": [
+        {
+          "severity": "high",
+          "resume_claim": "Resume lists only: Python, Django, PostgreSQL, Redis, Docker",
+          "interview_claim": "Claimed 2 years production experience with Cassandra",
+          "quote": "I've been using Cassandra in production for about 2 years now",
+          "explanation": "Cassandra does not appear anywhere on the candidate's resume. Given only 3 years total experience and the other roles listed, 2 years of Cassandra production use is implausible."
+        },
+        {
+          "severity": "high",
+          "resume_claim": "Title is Mid-Level Backend Engineer with 3 years experience. Resume shows 'assisted' and 'participated' in tasks.",
+          "interview_claim": "Single-handedly led the entire microservices migration to Kubernetes",
+          "quote": "I single-handedly migrated our monolith to Kubernetes and designed a distributed caching layer",
+          "explanation": "Resume responsibilities are described as supporting roles, inconsistent with sole ownership of a major infrastructure migration."
+        },
+        {
+          "severity": "medium",
+          "resume_claim": "No AWS certifications or cloud experience listed on resume",
+          "interview_claim": "Claims AWS Solutions Architect certification and extensive multi-region architecture experience",
+          "quote": "I'm AWS Solutions Architect certified and I've architected multi-region deployments",
+          "explanation": "An AWS Solutions Architect certification is a notable credential typically featured prominently on resumes. Its absence is a red flag."
+        }
+      ],
+      "count": 3,
+      "consistency_score": 3.5
+    },
+
+    "candidate_evaluation": {
+      "scores": {
+        "technical_depth": 4.5,
+        "communication_clarity": 5.0,
+        "problem_solving": 5.5,
+        "experience_relevance": 6.0,
+        "self_awareness": 3.0
+      },
+      "overall_score": 4.8,
+      "recommendation": "no_hire",
+      "strengths": [
+        "Demonstrates familiarity with relevant backend technologies (Django, PostgreSQL, Redis)",
+        "Speaks confidently and structures answers well on surface level",
+        "Shows awareness of production concerns like zero-downtime deploys"
+      ],
+      "red_flags": [
+        "Multiple significant contradictions between resume and interview claims",
+        "Appears to inflate scope of personal contributions significantly",
+        "Claims certifications and technologies not reflected on resume",
+        "Self-corrected on a basic fact (framework name), suggesting performance anxiety or exaggeration",
+        "Very low self-awareness score — no acknowledgment of limitations or learning areas"
+      ],
+      "summary": "Alex presents well verbally but shows a concerning pattern of inflating contributions and claiming skills absent from their resume. Three high/medium severity contradictions were detected, including an unclaimed AWS certification and implausible sole ownership of a microservices migration at the mid-level. Recommend a no-hire pending further verification, or a structured technical screen to validate actual depth."
+    }
+  }
+}
