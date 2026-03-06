@@ -1,31 +1,30 @@
 import os
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Form
 from dotenv import load_dotenv
 
-# Import our providers (we will define these next)
-from transcript_engine import transcribe_with_groq, transcribe_with_deepgram
+# Import the specific functions from your engine file
+from transcript_engine import transcribe_with_groq
 
 load_dotenv()
+
 app = FastAPI()
 
-@app.websocket("/ws/transcribe")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    provider = os.getenv("STT_PROVIDER", "GROQ")
-    print(f"Connected using {provider}")
-
+@app.post("/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    # These match the fields from the team's api.ts
+    sequence_id: str = Form(...), 
+    speaker: str = Form(...)
+):
+    # 1. Read the audio bytes from the incoming multipart request
+    audio_bytes = await audio.read()
+    
+    # 2. Pass to your Groq engine
+    # Note: content.ts sends 'audio/webm', which Groq handles well
     try:
-        while True:
-            audio_bytes = await websocket.receive_bytes()
-            
-            # Switch logic
-            if provider == "GROQ":
-                text = await transcribe_with_groq(audio_bytes)
-            else:
-                text = await transcribe_with_deepgram(audio_bytes)
-
-            if text:
-                await websocket.send_json({"transcript": text})
-
-    except WebSocketDisconnect:
-        print("Disconnected")
+        transcript = await transcribe_with_groq(audio_bytes)
+    except Exception as e:
+        return {"transcript": f"Error: {str(e)}"}
+    
+    # 3. Return the JSON format the extension's background.ts expects
+    return {"transcript": transcript}
