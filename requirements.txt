@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pdfplumber
+anthropic
+python-dotenv
+python-multipart
+faiss-cpu
+numpy
