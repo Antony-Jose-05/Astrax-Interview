@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 
 # Import our providers (we will define these next)
-from providers import transcribe_with_groq, transcribe_with_deepgram
+from transcript_engine import transcribe_with_groq, transcribe_with_deepgram
 
 load_dotenv()
 app = FastAPI()
