@@ -43,8 +43,12 @@ class AnalyzeRequest(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    """Response body from the /analyze-answer endpoint."""
-    analysis: dict
+    """Response body matching the extension's AnalyzeAnswerResponse interface.
+    Flat shape: { follow_up_questions: string[], contradictions: string[], score: number }
+    """
+    follow_up_questions: list[str]
+    contradictions: list[str]
+    score: float
 
 
 class HealthResponse(BaseModel):
@@ -75,6 +79,34 @@ def extract_latest_answer(transcript: str) -> str:
     return " ".join(candidate_lines) if candidate_lines else transcript[-500:]
 
 
+def flatten_response(analysis: dict) -> dict:
+    """Flatten the nested analysis into the shape the extension expects."""
+    # Extract just the question strings from follow-up objects
+    follow_ups = analysis.get("follow_up_questions", [])
+    follow_up_strings = [
+        q["question"] if isinstance(q, dict) else str(q)
+        for q in follow_ups
+    ]
+
+    # Extract contradiction explanations as simple strings
+    alerts = analysis.get("contradiction_alerts", {})
+    contradiction_items = alerts.get("items", [])
+    contradiction_strings = [
+        f"[{c.get('severity', 'medium').upper()}] {c.get('explanation', '')}"
+        for c in contradiction_items
+    ]
+
+    # Extract the overall score
+    evaluation = analysis.get("candidate_evaluation", {})
+    score = evaluation.get("overall_score", 0.0)
+
+    return {
+        "follow_up_questions": follow_up_strings,
+        "contradictions": contradiction_strings,
+        "score": score,
+    }
+
+
 # ─────────────────────────────────────────────
 # ENDPOINTS
 # ─────────────────────────────────────────────
@@ -94,6 +126,9 @@ def analyze_answer(request: AnalyzeRequest):
     1. Follow-up question generation (with RAG context)
     2. Contradiction detection (resume vs transcript)
     3. Candidate evaluation scoring
+
+    Returns flat shape matching extension's AnalyzeAnswerResponse:
+    { follow_up_questions: string[], contradictions: string[], score: number }
     """
     # Use provided latest_answer, or extract it from transcript
     latest_answer = request.latest_answer or extract_latest_answer(request.transcript)
@@ -110,4 +145,6 @@ def analyze_answer(request: AnalyzeRequest):
     if "error" in result:
         raise HTTPException(status_code=422, detail=result)
 
-    return AnalyzeResponse(analysis=result["analysis"])
+    # Flatten nested analysis → flat shape for extension
+    flat = flatten_response(result["analysis"])
+    return AnalyzeResponse(**flat)
