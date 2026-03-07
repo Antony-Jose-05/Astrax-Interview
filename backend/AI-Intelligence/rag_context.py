@@ -19,32 +19,39 @@ def build_resume_chunks(resume: dict) -> list[ResumeChunk]:
     chunks = []
 
     # Skills chunk
-    if skills := resume.get("skills"):
+    # Support both new parser (skills, programming_languages, tools_and_technologies) and old
+    skill_list = []
+    skill_list.extend(resume.get("skills", []))
+    skill_list.extend(resume.get("programming_languages", []))
+    skill_list.extend(resume.get("tools_and_technologies", []))
+    
+    if skill_list:
         chunks.append(ResumeChunk(
             section="skills",
-            content=f"Technical skills listed on resume: {', '.join(skills)}",
-            keywords=[s.lower() for s in skills],
+            content=f"Technical skills listed on resume: {', '.join(skill_list)}",
+            keywords=[s.lower() for s in skill_list],
         ))
 
-    # Experience chunks (one per job)
-    for job in resume.get("experience", []):
-        title = job.get("title", "")
-        company = job.get("company", "")
-        duration = job.get("duration", "")
-        responsibilities = " | ".join(job.get("responsibilities", []))
-        content = (
-            f"Role: {title} at {company} ({duration}). "
-            f"Responsibilities: {responsibilities}"
-        )
-        keywords = [
-            w.lower() for w in
-            (title + " " + responsibilities).split()
-            if len(w) > 3
-        ]
+    # Experience chunks
+    # Support both 'experience' (objects) and 'past_companies' (strings/objects)
+    exp = resume.get("experience") or resume.get("past_companies") or []
+    for item in exp:
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("role") or ""
+            company = item.get("company") or ""
+            duration = item.get("duration") or item.get("years") or ""
+            resp = " | ".join(item.get("responsibilities", []))
+            content = f"Role: {title} at {company} ({duration}). {resp}"
+            kw = [w.lower() for w in (title + " " + resp).split() if len(w) > 3]
+        else:
+            # item is just a string (past_companies)
+            content = f"Previous Experience: {item}"
+            kw = [w.lower() for w in item.split()]
+            
         chunks.append(ResumeChunk(
             section="experience",
             content=content,
-            keywords=keywords,
+            keywords=kw,
         ))
 
     # Education chunk

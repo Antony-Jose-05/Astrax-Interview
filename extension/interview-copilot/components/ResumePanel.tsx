@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 interface ResumeData {
   name: string;
@@ -51,8 +51,105 @@ const skillColorMap: Record<string, string> = {
 
 const defaultSkillColor = "bg-slate-600/40 text-slate-300 border-slate-500/30";
 
-export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data = defaultResume }) => {
+export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data: initialData }) => {
+  const [data, setData] = useState<ResumeData | null>(initialData || null);
   const [expanded, setExpanded] = useState<number | null>(null);
+
+  useEffect(() => {
+    const handler = (message: any) => {
+      console.log("[ResumePanel] Message received:", message.type);
+      if (message.type === "RESUME_DATA" && message.data) {
+        const r = message.data.resume || message.data;
+        const mappedData: ResumeData = {
+          name: r.full_name || r.name || "Candidate",
+          title: r.current_job_title || r.title || "Software Engineer",
+          yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
+          skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
+          projects: r.projects || [],
+        };
+        setData(mappedData);
+      }
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(handler);
+      // Ask background for current state immediately in case we missed it
+      chrome.runtime.sendMessage({ type: "GET_STATUS" }, (res) => {
+        if (res?.storedResume) {
+          const r = res.storedResume.resume || res.storedResume;
+           const mappedData: ResumeData = {
+            name: r.full_name || r.name || "Candidate",
+            title: r.current_job_title || r.title || "Software Engineer",
+            yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
+            skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
+            projects: r.projects || [],
+          };
+          setData(mappedData);
+        }
+      });
+      return () => chrome.runtime.onMessage.removeListener(handler);
+    }
+  }, []);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      console.log("[ResumePanel] Uploading resume to Port 8003...");
+      const res = await fetch("http://127.0.0.1:8003/upload-resume", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await res.json();
+      console.log("[ResumePanel] Upload success:", result);
+      
+      // Update background script
+      chrome.runtime.sendMessage({ type: "RESUME_DATA", data: result });
+      
+      const r = result.resume || result;
+      
+      // Update local UI
+      const mappedData: ResumeData = {
+        name: r.full_name || r.name || "Candidate",
+        title: r.current_job_title || r.title || "Software Engineer",
+        yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
+        skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
+        projects: r.projects || [],
+      };
+      setData(mappedData);
+    } catch (err) {
+      console.error("[ResumePanel] Upload failed:", err);
+      alert("Failed to upload resume. Please make sure the service on Port 8003 is running.");
+    }
+  };
+
+  if (!data) {
+    return (
+      <div 
+        className="panel-card bg-slate-800/50 border-dashed border-slate-600 flex flex-col items-center justify-center py-10 cursor-pointer hover:bg-slate-800/80 transition-all"
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          className="hidden" 
+          accept=".pdf" 
+          onChange={handleUpload}
+        />
+        <div className="text-3xl mb-2">📄</div>
+        <p className="text-slate-400 text-xs font-medium">Click to Upload Resume (PDF)</p>
+        <p className="text-slate-500 text-[10px] mt-1 text-center px-4">
+          Upload a resume to enable AI analysis and inconsistency detection.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="panel-card group">

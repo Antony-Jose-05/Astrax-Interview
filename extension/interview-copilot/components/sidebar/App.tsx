@@ -63,6 +63,40 @@ function ElapsedTimer() {
 
 function App() {
   const [activePanel, setActivePanel] = useState<PanelId>("transcript");
+  const [isRecording, setIsRecording] = useState(false);
+  const [sttStatus, setSttStatus] = useState<"online" | "offline">("offline");
+  const [aiStatus, setAiStatus] = useState<"online" | "offline">("offline");
+
+  useEffect(() => {
+    // Ping services to check status
+    const checkStatus = async () => {
+      try {
+        const sttReq = await fetch("http://localhost:8002/").catch(() => null);
+        setSttStatus(sttReq ? "online" : "offline");
+        
+        const aiReq = await fetch("http://localhost:8001/").catch(() => null);
+        setAiStatus(aiReq ? "online" : "offline");
+      } catch (e) {}
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const toggleTracking = () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, { type: "TOGGLE_RECORDING", active: !isRecording }, (res) => {
+          if (chrome.runtime.lastError) {
+            console.error("Content script not ready");
+          } else {
+            setIsRecording(!!res?.active);
+          }
+        });
+      }
+    });
+  };
 
   return (
     <div
@@ -81,7 +115,27 @@ function App() {
           </div>
         </div>
 
-        <ElapsedTimer />
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
+            <div className={`w-1.5 h-1.5 rounded-full ${sttStatus === "online" ? "bg-emerald-500" : "bg-red-500"}`} />
+            <span className="text-[9px] font-bold text-slate-400">STT</span>
+          </div>
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
+            <div className={`w-1.5 h-1.5 rounded-full ${aiStatus === "online" ? "bg-emerald-500" : "bg-red-500"}`} />
+            <span className="text-[9px] font-bold text-slate-400">AI</span>
+          </div>
+          <button 
+            onClick={toggleTracking}
+            className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${
+              isRecording 
+                ? "bg-red-500/20 text-red-500 border border-red-500/30 animate-pulse" 
+                : "bg-emerald-600 text-white"
+            }`}
+          >
+            {isRecording ? "◼ STOP TRACKING" : "▶ START TRACKING"}
+          </button>
+          <ElapsedTimer />
+        </div>
       </header>
 
       {/* Navigation */}

@@ -12,7 +12,9 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 # from deepgram import DeepgramClient, PrerecordedOptions
 
 async def transcribe_with_groq(audio_bytes: bytes) -> str:
-    """Sends 2-3 second audio chunks to Groq Whisper."""
+    """Sends audio chunks to Groq Whisper."""
+    if len(audio_bytes) < 1000: # 1KB minimum for any useful audio
+        return ""
     try:
         # Groq needs a 'file-like' object with a filename
         # Change "chunk.wav" to "chunk.webm"
@@ -20,12 +22,18 @@ async def transcribe_with_groq(audio_bytes: bytes) -> str:
         
         response = groq_client.audio.transcriptions.create(
             file=audio_file,
-            model="whisper-large-v3", # Fastest and most accurate
-            response_format="json",
+            model="whisper-large-v3", 
+            response_format="verbose_json",
             language="en"
         )
-        return response.text
+        transcript = response.text
+        print(f"[Engine] Groq Result: \"{transcript}\"")
+        return transcript
     except Exception as e:
+        error_msg = str(e)
+        if "no audio track found" in error_msg.lower():
+            # This happens during silence or initial setup; keep it quiet
+            return ""
         print(f"Groq Error: {e}")
         return ""
 

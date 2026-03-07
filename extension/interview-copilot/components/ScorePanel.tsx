@@ -69,6 +69,24 @@ const overallScore = Math.round(metrics.reduce((sum, m) => sum + m.score, 0) / m
 
 export const ScorePanel: React.FC = () => {
   const [animated, setAnimated] = useState(false);
+  const [liveScore, setLiveScore] = useState<number>(0);
+
+  useEffect(() => {
+    const handler = (message: any) => {
+      console.log("[ScorePanel] Message received:", message.type, message);
+      if (message.type === "AI_RESULT" && typeof message.score === "number") {
+        console.log("[ScorePanel] Updating score:", message.score);
+        setLiveScore(Math.round(message.score));
+        setAnimated(false);
+        setTimeout(() => setAnimated(true), 50);
+      }
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(handler);
+      return () => chrome.runtime.onMessage.removeListener(handler);
+    }
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setAnimated(true), 200);
@@ -89,7 +107,7 @@ export const ScorePanel: React.FC = () => {
       <div className="flex items-center justify-between p-3 mb-4 rounded-xl bg-gradient-to-r from-indigo-900/40 to-slate-800/60 border border-indigo-500/20">
         <div>
           <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">Overall Score</div>
-          <div className="text-slate-300 text-xs">{getScoreLabel(overallScore).label}</div>
+          <div className="text-slate-300 text-xs">{getScoreLabel(liveScore).label}</div>
         </div>
         <div className="relative">
           <svg className="w-14 h-14 -rotate-90" viewBox="0 0 36 36">
@@ -104,7 +122,7 @@ export const ScorePanel: React.FC = () => {
               fill="none"
               stroke="url(#scoreGrad)"
               strokeWidth="3"
-              strokeDasharray={`${animated ? (overallScore / 100) * 100 : 0} 100`}
+              strokeDasharray={`${animated ? (liveScore / 100) * 100 : 0} 100`}
               strokeLinecap="round"
               className="transition-all duration-1000 ease-out"
             />
@@ -116,7 +134,7 @@ export const ScorePanel: React.FC = () => {
             </defs>
           </svg>
           <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-base font-bold text-white font-mono">{overallScore}</span>
+            <span className="text-base font-bold text-white font-mono">{liveScore}</span>
           </div>
         </div>
       </div>

@@ -8,6 +8,10 @@ import uuid
 
 app = FastAPI()
 
+@app.get("/")
+def root():
+    return {"message": "Resume Parser Service is running"}
+
 # CORS — this is critical so the frontend/extension can talk to you
 app.add_middleware(
     CORSMiddleware,

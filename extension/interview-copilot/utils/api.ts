@@ -8,8 +8,8 @@
 // Configuration
 // ─────────────────────────────────────────────
 
-const STT_API_BASE = "http://localhost:8002"; // STT Service  → /transcribe
-const AI_API_BASE = "http://localhost:8001"; // AI Service   → /analyze-answer
+const STT_API_BASE = "http://127.0.0.1:8002"; // STT Service  → /transcribe
+const AI_API_BASE = "http://127.0.0.1:8001"; // AI Service   → /analyze-answer
 
 // ─────────────────────────────────────────────
 // Response shape contracts
@@ -20,8 +20,8 @@ export interface TranscribeResponse {
 }
 
 export interface AnalyzeAnswerResponse {
-    follow_up_questions: string[];
-    contradictions: string[];
+    follow_up_questions: any[];
+    contradictions: any[];
     score: number;
 }
 
@@ -76,6 +76,7 @@ export async function sendAudio(
     const endpoint = "/transcribe";
 
     const form = new FormData();
+    console.log(`[API] Sending ${audio.size}B to ${STT_API_BASE}${endpoint}`);
     form.append("audio", audio, `chunk_${sequence_id}.webm`);
     form.append("sequence_id", String(sequence_id));
     form.append("speaker", speaker);

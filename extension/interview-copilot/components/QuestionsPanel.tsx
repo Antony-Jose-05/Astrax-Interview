@@ -52,7 +52,30 @@ function vaguenessLabel(score: number): string {
 }
 
 export const QuestionsPanel: React.FC = () => {
+  const [questions, setQuestions] = useState<FollowUpQuestion[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    const handler = (message: any) => {
+      console.log("[QuestionsPanel] Message received:", message.type, message);
+      if (message.type === "AI_RESULT" && message.questions) {
+        console.log("[QuestionsPanel] Updating questions:", message.questions.length);
+        const newQuestions: FollowUpQuestion[] = message.questions.map((q: any, i: number) => ({
+          id: `ai-${Date.now()}-${i}`,
+          question: q.question || q,
+          vaguenessScore: 0, 
+          category: q.intent || "technical",
+          rationale: q.triggered_by ? `Triggered by: "${q.triggered_by}"` : "Live AI suggestion",
+        }));
+        setQuestions(newQuestions);
+      }
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(handler);
+      return () => chrome.runtime.onMessage.removeListener(handler);
+    }
+  }, []);
 
   const handleCopy = (id: string, text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -66,12 +89,12 @@ export const QuestionsPanel: React.FC = () => {
         <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
         <span className="panel-label">AI FOLLOW-UP SUGGESTIONS</span>
         <span className="ml-auto text-[10px] font-mono text-slate-500 bg-slate-700/50 px-2 py-0.5 rounded">
-          {defaultQuestions.length} queued
+          {questions.length} queued
         </span>
       </div>
 
       <div className="space-y-3">
-        {defaultQuestions.map((q, i) => {
+        {questions.map((q, i) => {
           const catCfg = categoryConfig[q.category];
           return (
             <div

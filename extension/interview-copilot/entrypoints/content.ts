@@ -22,29 +22,35 @@ function detectPlatform(): MeetingPlatform {
   return null;
 }
 
-const CHUNK_INTERVAL_MS = 2_000;
+const CHUNK_INTERVAL_MS = 5_000;
 const AUDIO_MIME_TYPE = "audio/webm;codecs=opus";
 
-let mediaStream: MediaStream | null = null;
+let micStream: MediaStream | null = null;
+let tabAudioStream: MediaStream | null = null;
+let audioContext: AudioContext | null = null;
+let mixedDestination: MediaStreamAudioDestinationNode | null = null;
 let sequenceId = 0;
 let isRecording = false;
 
-function recordChunk(): void {
-  if (!mediaStream || !isRecording) return;
+function recordStream(stream: MediaStream): void {
+  if (!isRecording) return;
 
   const mimeType = MediaRecorder.isTypeSupported(AUDIO_MIME_TYPE)
     ? AUDIO_MIME_TYPE
     : "";
 
   const recorder = new MediaRecorder(
-    mediaStream,
+    stream,
     mimeType ? { mimeType } : {}
   );
 
   const chunks: Blob[] = [];
 
   recorder.ondataavailable = (e: BlobEvent) => {
-    if (e.data.size > 0) chunks.push(e.data);
+    if (e.data.size > 0) {
+      console.log(`[content] Audio data available: ${e.data.size} bytes`);
+      chunks.push(e.data);
+    }
   };
 
   recorder.onstop = async () => {
@@ -55,39 +61,39 @@ function recordChunk(): void {
     });
 
     console.log(
-      `[content] Chunk complete | seq=${currentId} | size=${blob.size}B | mime=${blob.type}`
+      `[content] Mixed chunk complete | seq=${currentId} | size=${blob.size}B`
     );
 
-    if (blob.size === 0) {
-      console.warn(`[content] Empty blob for seq=${currentId} — skipping.`);
+    if (blob.size < 500) { 
+      console.warn(`[content] Chunk too small (${blob.size}B) — likely empty header. Skipping.`);
     } else {
-      const buffer = await blob.arrayBuffer();
-      chrome.runtime.sendMessage(
-        {
-          type: "AUDIO_CHUNK",
-          audio: { buffer, mimeType: blob.type },
-          sequence_id: currentId,
-          speaker: "candidate",
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.error(
-              `[content] sendMessage error for seq=${currentId}:`,
-              chrome.runtime.lastError.message
-            );
-          } else {
-            console.log(`[content] Background ack for seq=${currentId}:`, response);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string;
+        chrome.runtime.sendMessage(
+          {
+            type: "AUDIO_CHUNK",
+            audioDataUrl: dataUrl,
+            sequence_id: currentId,
+            speaker: "mixed", // Unified tag for the simplified pipeline
+          },
+          (response) => {
+             if (chrome.runtime.lastError) {
+               console.debug(`[content] Broadcast error:`, chrome.runtime.lastError.message);
+             }
           }
-        }
-      );
+        );
+      };
+      reader.readAsDataURL(blob);
     }
 
-    recordChunk();
+    if (isRecording) {
+      setTimeout(() => recordStream(stream), 100); 
+    }
   };
 
-  recorder.onerror = (e) => console.error("[content] MediaRecorder error:", e);
+  recorder.onerror = (e) => console.error(`[content] Mixed recorder error:`, e);
   recorder.start();
-  console.log(`[content] Recording window started (${CHUNK_INTERVAL_MS}ms)…`);
 
   setTimeout(() => {
     if (recorder.state !== "inactive") {
@@ -97,35 +103,128 @@ function recordChunk(): void {
 }
 
 async function startRecording(): Promise<void> {
-  console.log("[content] Requesting microphone access…");
+  console.log("[content] Initializing Mixed-Audio Pipeline (Mic + Tab)…");
+  
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 16_000,
-      },
+    // 1. Get Microphone
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
       video: false,
     });
-  } catch (err) {
-    console.error("[content] getUserMedia failed:", err);
-    return;
-  }
+    console.log("[content] Microphone access granted.");
 
-  console.log("[content] Microphone access granted. Starting independent-chunk recorder.");
-  isRecording = true;
-  recordChunk();
+    // 2. Get Tab Audio
+    tabAudioStream = await (navigator.mediaDevices as any).getDisplayMedia({
+      video: { 
+        displaySurface: "browser",
+        width: { max: 1 }, 
+        height: { max: 1 },
+        frameRate: { max: 1 }
+      },
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true
+      },
+      systemAudio: "include",
+      preferCurrentTab: false,
+      selfBrowserSurface: "include",
+      monitorTypeSurfaces: "include"
+    });
+    console.log("[content] Tab audio access granted.");
+
+    // 3. Setup Audio Mixing
+    audioContext = new AudioContext(); 
+    mixedDestination = audioContext.createMediaStreamDestination();
+
+    // Defensive track check
+    const micTracks = micStream.getAudioTracks();
+    const tabTracks = tabAudioStream.getAudioTracks();
+
+    if (micTracks.length === 0) console.warn("[content] No mic audio tracks found!");
+    if (tabTracks.length === 0) {
+      console.warn("[content] NO TAB AUDIO DETECTED! Ensure 'Share tab audio' was checked in the picker.");
+      // Optional: alert the user or show a UI warning
+    }
+
+    const micSource = audioContext.createMediaStreamSource(micStream);
+    const tabSource = audioContext.createMediaStreamSource(
+      tabTracks.length > 0 ? tabAudioStream : new MediaStream() // Fallback to empty stream if no tab audio
+    );
+    
+    micSource.connect(mixedDestination);
+    if (tabTracks.length > 0) {
+      tabSource.connect(mixedDestination);
+    }
+
+    await audioContext.resume();
+    console.log(`[content] Pipeline active. Rate=${audioContext.sampleRate}Hz, MicTracks=${micTracks.length}, TabTracks=${tabTracks.length}`);
+
+    isRecording = true;
+    
+    // Start unified recording loop
+    recordStream(mixedDestination.stream);
+
+    // Add track-end monitoring
+    tabAudioStream.getTracks().forEach(track => {
+      track.onended = () => {
+        console.warn(`[content] Tab Audio Track (${track.kind}) ENDED unexpectedly.`);
+      };
+    });
+
+    // Keep-alive video for Tab Audio tracks
+    if (tabAudioStream.getVideoTracks().length > 0) {
+      const dummyVideo = document.createElement("video");
+      dummyVideo.id = "astrax-keep-alive-video";
+      dummyVideo.style.position = "fixed";
+      dummyVideo.style.top = "0";
+      dummyVideo.style.left = "0";
+      dummyVideo.style.width = "1px";
+      dummyVideo.style.height = "1px";
+      dummyVideo.style.opacity = "0.01";
+      dummyVideo.style.pointerEvents = "none";
+      dummyVideo.style.zIndex = "-999";
+      
+      dummyVideo.srcObject = tabAudioStream;
+      document.body.appendChild(dummyVideo); 
+      
+      dummyVideo.play().catch(err => console.error("[content] Keep-alive video play error:", err));
+      (window as any)._dummyVideo = dummyVideo; 
+    }
+
+  } catch (err) {
+    console.error("[content] Audio mix failed:", err);
+    stopRecording();
+    throw err;
+  }
 }
 
 function stopRecording(): void {
   isRecording = false;
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => {
-      track.stop();
-    });
-    mediaStream = null;
+  
+  const stopTracks = (stream: MediaStream | null) => {
+    stream?.getTracks().forEach(t => t.stop());
+  };
+
+  stopTracks(micStream);
+  stopTracks(tabAudioStream);
+
+  if (audioContext) {
+    audioContext.close().catch(console.error);
+    audioContext = null;
   }
-  console.log("[content] Recording stopped.");
+
+  if ((window as any)._dummyVideo) {
+    (window as any)._dummyVideo.srcObject = null;
+    (window as any)._dummyVideo.remove();
+    delete (window as any)._dummyVideo;
+  }
+
+  micStream = null;
+  tabAudioStream = null;
+  mixedDestination = null;
+
+  console.log("[content] Mixed recording stopped and cleaned up.");
 }
 
 export default defineContentScript({
@@ -133,15 +232,46 @@ export default defineContentScript({
   matches: ["*://meet.google.com/*", "*://*.zoom.us/j/*"],
 
   async main() {
-    const platform = detectPlatform();
+    console.log("[content] Content script loaded and main() running.");
 
+    // Listen for start/stop commands from the popup
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log("[content] Message received:", message.type, message);
+      if (message.type === "TOGGLE_RECORDING") {
+        const platform = detectPlatform();
+        if (!platform) {
+          console.warn("[content] Cannot start recording: Not a supported meeting page.");
+          sendResponse({ active: false, error: "Not a supported meeting page" });
+          return true;
+        }
+
+        if (message.active && !isRecording) {
+          console.log("[content] Starting recording session...");
+          startRecording()
+            .then(() => {
+              console.log("[content] Recording session active.");
+              sendResponse({ active: true });
+            })
+            .catch((err) => {
+              console.error("[content] Failed to start recording:", err);
+              sendResponse({ active: false, error: err.message });
+            });
+        } else {
+          console.log("[content] Stopping recording session...");
+          stopRecording();
+          sendResponse({ active: false });
+        }
+        return true;
+      }
+    });
+
+    const platform = detectPlatform();
     if (!platform) {
-      console.log(`[content] Not a supported meeting page (${window.location.href}). Exiting.`);
+      console.log(`[content] Not a supported meeting page (${window.location.href}). Idle.`);
       return;
     }
 
     console.log(`[content] Meeting platform detected: ${platform}`);
-    await startRecording();
 
     window.addEventListener("beforeunload", () => {
       console.log("[content] Page unloading — stopping recording.");

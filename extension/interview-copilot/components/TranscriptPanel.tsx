@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 interface TranscriptMessage {
   id: string;
   text: string;
-  speaker: "INTERVIEWER" | "CANDIDATE";
+  speaker: "INTERVIEWER" | "CANDIDATE" | "MIXED";
   timestamp: Date;
 }
 
@@ -26,21 +26,26 @@ function formatTime(date: Date): string {
 }
 
 const TranscriptPanel: React.FC = () => {
-  const [messages, setMessages] = useState<TranscriptMessage[]>(mockMessages);
+  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [isLive, setIsLive] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (message: any) => {
-      if (message.type === "TRANSCRIPT_LINE") {
-        const newMsg: TranscriptMessage = {
-          id: Date.now().toString(),
-          text: message.text,
-          speaker: message.speaker,
+      console.log(`[TranscriptPanel] Message received:`, message.type, message);
+      if (message.type === "TRANSCRIPT" && message.text && message.text.trim().length > 0) {
+        console.log(`[TranscriptPanel] Adding new message: "${message.text}"`);
+        const rawSpeaker = (message.speaker || "MIXED").toUpperCase();
+        const newMessage: TranscriptMessage = {
+          id: `msg-${Date.now()}-${Math.random()}`,
+          text: (message.text || "").trim(),
+          speaker: rawSpeaker as any,
           timestamp: new Date(),
         };
-        setMessages((prev) => [...prev, newMsg]);
+        setMessages((prev) => [...prev, newMessage]);
+      } else if (message.type === "TRANSCRIPT") {
+        console.warn("[TranscriptPanel] Ignored empty or missing transcript text.");
       }
     };
 
@@ -52,7 +57,9 @@ const TranscriptPanel: React.FC = () => {
 
   useEffect(() => {
     if (isLive) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      setTimeout(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
     }
   }, [messages, isLive]);
 
@@ -100,36 +107,36 @@ const TranscriptPanel: React.FC = () => {
         ref={scrollRef}
         className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar"
       >
-        {messages.map((msg, i) => (
-          <div
-            key={msg.id}
-            className={`flex ${
-              msg.speaker === "INTERVIEWER"
-                ? "justify-end"
-                : "justify-start"
-            }`}
-            style={{ animationDelay: `${i * 20}ms` }}
-          >
+        {messages.map((msg, i) => {
+          const isInterviewer = msg.speaker === "INTERVIEWER";
+          const isCandidate = msg.speaker === "CANDIDATE";
+          const isMixed = msg.speaker === "MIXED" || (!isInterviewer && !isCandidate);
+
+          return (
             <div
-              className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed relative group ${
-                msg.speaker === "INTERVIEWER"
-                  ? "bg-indigo-600/25 border border-indigo-500/30 text-indigo-100 rounded-br-sm"
-                  : "bg-slate-700/60 border border-slate-600/40 text-slate-200 rounded-bl-sm"
-              }`}
+              key={msg.id || i}
+              className={`flex ${isInterviewer ? "justify-end" : "justify-start"}`}
+              style={{ animationDelay: `${i * 20}ms` }}
             >
               <div
-                className={`text-[9px] font-bold mb-1 uppercase tracking-wider ${
-                  msg.speaker === "INTERVIEWER"
-                    ? "text-indigo-400"
-                    : "text-slate-500"
+                className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed relative group ${
+                  isInterviewer
+                    ? "bg-indigo-600/25 border border-indigo-500/30 text-indigo-100 rounded-br-sm"
+                    : isCandidate
+                      ? "bg-slate-700/60 border border-slate-600/40 text-slate-200 rounded-bl-sm"
+                      : "bg-emerald-600/20 border border-emerald-500/30 text-emerald-100 rounded-bl-sm"
                 }`}
               >
-                {msg.speaker === "INTERVIEWER"
-                  ? "YOU"
-                  : "CANDIDATE"}
-              </div>
+                <div
+                  className={`text-[9px] font-bold mb-1 uppercase tracking-wider ${
+                    isInterviewer ? "text-indigo-400" :
+                    isCandidate ? "text-slate-500" : "text-emerald-400"
+                  }`}
+                >
+                  {isInterviewer ? "INTERVIEWER" : isCandidate ? "INTERVIEWEE" : "INTERVIEW"}
+                </div>
 
-              <p>{msg.text}</p>
+                <p className="whitespace-pre-wrap">{msg.text || "..."}</p>
 
               <div
                 className={`text-[9px] mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${
@@ -142,8 +149,8 @@ const TranscriptPanel: React.FC = () => {
               </div>
             </div>
           </div>
-        ))}
-
+          );
+        })}
         <div ref={bottomRef} />
       </div>
     </div>

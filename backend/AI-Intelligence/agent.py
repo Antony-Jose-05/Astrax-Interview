@@ -8,7 +8,10 @@ import os
 import logging
 from openai import OpenAI
 from typing import Any
+from dotenv import load_dotenv
 from rag_context import build_rag_context
+
+load_dotenv()
 
 MODEL = "llama-3.3-70b-versatile"
 _client = None
@@ -20,7 +23,13 @@ def get_client() -> OpenAI:
     if _client is None:
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
+            print("[AI-Intelligence] GROQ_API_KEY NOT FOUND in agent.py environment!")
             raise ValueError("GROQ_API_KEY environment variable is not set")
+        
+        # Log masked key for verification
+        masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "****"
+        print(f"[AI-Intelligence] GROQ_API_KEY available in agent.py: {masked}")
+        
         _client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     return _client
 
@@ -29,9 +38,18 @@ def get_client() -> OpenAI:
 # PROMPT TEMPLATES
 # ─────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an expert technical interviewer and talent evaluator with 15+ years of experience.
-You analyze interview transcripts with surgical precision.
-Always respond with valid JSON only — no markdown, no prose outside the JSON structure."""
+SYSTEM_PROMPT = """You are an expert technical interviewer and talent evaluator.
+You are analyzing a LIVE INTERVIEW transcript which is a MIX of both the Interviewer and the Candidate. 
+Your first critical task is to CONTEXTUALLY ATTRIBUTE each statement:
+- Questions and guidance are from the INTERVIEWER.
+- Technical explanations and project descriptions are from the CANDIDATE (INTERVIEWEE).
+
+Your job is to support the Interviewer by:
+1. Detecting inconsistencies between what the Candidate says and their Resume.
+2. Generating smart follow-up questions for the Interviewer to ask.
+3. Evaluating the candidate's performance.
+
+Always respond with valid JSON only."""
 
 
 FOLLOWUP_PROMPT = """You are conducting a technical interview. Analyze the candidate's latest answer and generate intelligent follow-up questions.
@@ -39,10 +57,10 @@ FOLLOWUP_PROMPT = """You are conducting a technical interview. Analyze the candi
 RESUME CONTEXT:
 {resume_summary}
 
-INTERVIEW TRANSCRIPT SO FAR:
+INTERVIEW TRANSCRIPT (MIXED SPEAKERS):
 {transcript}
 
-LATEST ANSWER:
+LATEST PART OF CONVERSATION:
 {latest_answer}
 
 CURRENT QUESTION TOPIC: {topic}
@@ -72,7 +90,7 @@ CONTRADICTION_PROMPT = """You are a resume verification expert. Compare the cand
 CANDIDATE RESUME:
 {resume_json}
 
-INTERVIEW TRANSCRIPT:
+INTERVIEW TRANSCRIPT (MIXED SPEAKERS):
 {transcript}
 
 Look for contradictions such as:
@@ -165,16 +183,25 @@ def call_llm(prompt: str, temperature: float = 0.3) -> dict[str, Any]:
 def summarize_resume(resume: dict) -> str:
     """Flatten resume to a readable summary for prompt injection."""
     lines = []
-    if name := resume.get("name"):
+    if name := (resume.get("full_name") or resume.get("name")):
         lines.append(f"Candidate: {name}")
-    if title := resume.get("title"):
+    if title := (resume.get("current_job_title") or resume.get("title")):
         lines.append(f"Current Title: {title}")
-    if skills := resume.get("skills"):
-        lines.append(f"Skills: {', '.join(skills)}")
-    if exp := resume.get("experience"):
+    
+    skill_list = []
+    skill_list.extend(resume.get("skills", []))
+    skill_list.extend(resume.get("programming_languages", []))
+    if skill_list:
+        lines.append(f"Skills: {', '.join(skill_list)}")
+        
+    exp = resume.get("experience") or resume.get("past_companies") or []
+    if exp:
         lines.append("Experience:")
         for job in exp:
-            lines.append(f"  - {job.get('title')} at {job.get('company')} ({job.get('duration')})")
+            if isinstance(job, dict):
+                lines.append(f"  - {job.get('title') or job.get('role')} at {job.get('company')}")
+            else:
+                lines.append(f"  - {job}")
     return "\n".join(lines)
 
 

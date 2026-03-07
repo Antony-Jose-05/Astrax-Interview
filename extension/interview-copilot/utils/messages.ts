@@ -32,9 +32,9 @@ export interface TranscriptMessage {
 export interface AIResultMessage {
     type: "AI_RESULT";
     /** Suggested follow-up or clarifying questions */
-    questions: string[];
-    /** Real-time alerts, e.g. "Answer is too vague" */
-    alerts: string[];
+    questions: any[];
+    /** Real-time alerts, e.g. "Inconsistency found" */
+    alerts: any[];
     /** Overall performance score (0–100) */
     score: number;
 }

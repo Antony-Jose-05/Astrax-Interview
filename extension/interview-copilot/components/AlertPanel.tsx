@@ -64,8 +64,33 @@ const severityConfig = {
 };
 
 export const AlertPanel: React.FC = () => {
+  const [alerts, setAlerts] = useState<MismatchAlert[]>([]);
   const [dismissed, setDismissed] = useState<string[]>([]);
-  const visible = defaultAlerts.filter(a => !dismissed.includes(a.id));
+
+  React.useEffect(() => {
+    const handler = (message: any) => {
+      console.log("[AlertPanel] Message received:", message.type, message);
+      if (message.type === "AI_RESULT" && message.alerts) {
+        console.log("[AlertPanel] Updating alerts:", message.alerts.length);
+        const newAlerts: MismatchAlert[] = message.alerts.map((a: any, i: number) => ({
+          id: `alert-${Date.now()}-${i}`,
+          field: "AI Detection",
+          resumeClaim: a.resume_claim || "No direct resume claim found.",
+          candidateClaim: a.interview_claim || a.quote || "N/A",
+          confidenceScore: 100,
+          severity: (a.severity === "high" || a.severity === "medium" || a.severity === "low") ? a.severity : "medium",
+        }));
+        setAlerts(newAlerts);
+      }
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(handler);
+      return () => chrome.runtime.onMessage.removeListener(handler);
+    }
+  }, []);
+
+  const visible = alerts.filter(a => !dismissed.includes(a.id));
 
   return (
     <div className="panel-card">

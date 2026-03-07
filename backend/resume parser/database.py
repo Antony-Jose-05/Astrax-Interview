@@ -10,7 +10,7 @@ def _load_db() -> dict:
         with open(DB_FILE, "r") as f:
             content = f.read().strip()
             if content.startswith("DATA ="):
-                content = content[len("DATA ="):].strip()
+                content = content.replace("DATA =", "", 1).strip()
             return ast.literal_eval(content) if content else {}
     return {}
 
