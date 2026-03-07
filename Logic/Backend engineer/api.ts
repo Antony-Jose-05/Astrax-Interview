@@ -8,7 +8,8 @@
 // Configuration
 // ─────────────────────────────────────────────
 
-const API_BASE = "http://localhost:8000"; // Replace with your backend URL or env var
+const STT_API_BASE = "http://localhost:8002"; // STT Service  → /transcribe
+const AI_API_BASE  = "http://localhost:8001"; // AI Service   → /analyze-answer
 
 // ─────────────────────────────────────────────
 // Response shape contracts
@@ -88,7 +89,7 @@ export async function sendAudio(
   form.append("sequence_id", String(sequence_id));
   form.append("speaker", speaker);
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${STT_API_BASE}${endpoint}`, {
     method: "POST",
     body: form,
     // Note: Do NOT set Content-Type manually — the browser sets it
@@ -117,7 +118,7 @@ export async function analyzeAnswer(
 ): Promise<AnalyzeAnswerResponse> {
   const endpoint = "/analyze-answer";
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${AI_API_BASE}${endpoint}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
