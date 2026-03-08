@@ -1,31 +1,32 @@
 # ─────────────────────────────────────────────────────
 # Astrax Interview — Consolidated Python Requirements
-# Covers: backend2 / AI-Intelligence / SST-Service
+# Covers: SSI-Service / resume parser / AI-Intelligence
 # ─────────────────────────────────────────────────────
+# Install: pip install -r requirements.txt
 
 # Web framework & server
-fastapi
-uvicorn[standard]
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
 
-# Groq AI (used as LLM + Whisper STT)
-groq
+# Groq AI (Whisper STT + LLaMA LLM)
+groq==0.13.0
 
 # OpenAI SDK (AI-Intelligence uses the OpenAI-compat Groq endpoint)
-openai
+openai==1.59.6
 
 # Resume parsing
-pdfplumber
-python-multipart
+pdfplumber==0.11.4
+python-multipart==0.0.20
 
-# Vector similarity (AI-Intelligence / backend2)
-faiss-cpu
-numpy
+# Vector similarity (AI-Intelligence RAG context)
+faiss-cpu==1.13.2
+numpy>=2.1.0,<2.3
 
 # HTTP client & async support
-httpx
+httpx==0.28.1
 
 # Environment config
-python-dotenv
+python-dotenv==1.0.1
 
 # Data validation
-pydantic
+pydantic>=2.11.7

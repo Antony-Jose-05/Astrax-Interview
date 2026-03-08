@@ -60,7 +60,7 @@ async function loadDismissed(): Promise<Set<string>> {
   try {
     if (typeof chrome !== 'undefined' && chrome.storage?.session) {
       const result = await chrome.storage.session.get(STORAGE_KEY);
-      return new Set<string>(result[STORAGE_KEY] ?? []);
+      return new Set<string>(Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : []);
     }
   } catch {
     // storage.session not available in dev outside extension context
