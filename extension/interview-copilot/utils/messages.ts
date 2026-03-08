@@ -1,68 +1,109 @@
 /**
  * messages.ts
- * Defines all message types for communication between
- * content script, background script, and popup UI.
+ * Single source of truth for ALL chrome.runtime message types in this extension.
+ *
+ * WHY centralise here?
+ * Chrome's message passing is untyped by default — every sendMessage/onMessage
+ * call accepts `any`. Putting every message shape in a discriminated union means
+ * TypeScript catches mismatches at compile time, not during a live interview.
+ *
+ * ── FIXES IN THIS VERSION ───────────────────────────────────────────────────
+ * 1. Added TRANSCRIPT_SEGMENT — sent by content.ts's DOM caption scraper.
+ *    Was missing entirely, causing background.ts to @ts-ignore every reference.
+ *
+ * 2. Added GET_TRANSCRIPT — used by TranscriptPanel to hydrate history on mount.
+ *    Was also missing from the union.
+ *
+ * 3. TranscriptMessage now includes `id` and `timestamp` fields that
+ *    background.ts was already attaching before broadcasting.
+ * ────────────────────────────────────────────────────────────────────────────
  */
 
-// ──────────────────────────────────────────────
-// 1. Audio Chunk — content script → background
-// ──────────────────────────────────────────────
-export interface AudioChunkMessage {
-    type: "AUDIO_CHUNK";
-    /** Raw audio data captured from the browser tab */
-    audio: Blob;
-    /** Monotonically increasing counter to preserve ordering */
-    sequence_id: number;
-    /** Identifies who is speaking, e.g. "interviewer" | "candidate" */
-    speaker: string;
+// ─────────────────────────────────────────────────────────────────────────────
+// content.ts → background.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sent by the DOM caption scraper in content.ts every time a new caption
+ * delta is detected. background.ts deduplicates and debounces these before
+ * broadcasting a final TRANSCRIPT message to the UI.
+ */
+export interface TranscriptSegmentMessage {
+  type: 'TRANSCRIPT_SEGMENT';
+  text: string;
+  speaker: string;   // Raw speaker name from the DOM, e.g. "You", "John"
+  isFinal: boolean;  // True when the caption line is complete (speaker changed)
 }
 
-// ──────────────────────────────────────────────
-// 2. Transcript — background → popup / content
-// ──────────────────────────────────────────────
-export interface TranscriptMessage {
-    type: "TRANSCRIPT";
-    /** Plain-text transcript returned by the backend STT service */
-    transcript: string;
+// ─────────────────────────────────────────────────────────────────────────────
+// popup/sidepanel → content.ts  (via chrome.tabs.sendMessage)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ToggleRecordingMessage {
+  type: 'TOGGLE_RECORDING';
+  active: boolean; // true = start scraping, false = stop
 }
 
-// ──────────────────────────────────────────────
-// 3. AI Result — background → popup
-// ──────────────────────────────────────────────
-export interface AIResultMessage {
-    type: "AI_RESULT";
-    /** Suggested follow-up or clarifying questions */
-    questions: any[];
-    /** Real-time alerts, e.g. "Inconsistency found" */
-    alerts: any[];
-    /** Overall performance score (0–100) */
-    score: number;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// popup/sidepanel → background.ts  (via chrome.runtime.sendMessage)
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ──────────────────────────────────────────────
-// 4. Resume Data — popup → background / content
-// ──────────────────────────────────────────────
 export interface ResumeDataMessage {
-    type: "RESUME_DATA";
-    /** Parsed resume payload; kept as `any` for schema flexibility */
-    data: any;
+  type: 'RESUME_DATA';
+  data: any; // Parsed resume JSON from the resume parser service
 }
 
-// ──────────────────────────────────────────────
-// Union — exhaustive type for all extension messages
-// ──────────────────────────────────────────────
-export type ExtensionMessage =
-    | AudioChunkMessage
-    | TranscriptMessage
-    | AIResultMessage
-    | ResumeDataMessage;
+export interface GetStatusMessage {
+  type: 'GET_STATUS';
+}
 
-// ──────────────────────────────────────────────
-// Helper — narrow an ExtensionMessage by its type discriminant
-// ──────────────────────────────────────────────
-export function isMessageOfType<T extends ExtensionMessage["type"]>(
-    message: ExtensionMessage,
-    type: T
+export interface GetTranscriptMessage {
+  type: 'GET_TRANSCRIPT'; // TranscriptPanel uses this to hydrate history on mount
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// background.ts → sidepanel/popup  (broadcast via chrome.runtime.sendMessage)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Broadcast after background.ts debounces and finalises a TRANSCRIPT_SEGMENT.
+ * Includes `id` and `speaker` so the UI can render chat-bubble style messages.
+ */
+export interface TranscriptMessage {
+  type: 'TRANSCRIPT';
+  id: string;          // Unique message ID, e.g. `msg-${Date.now()}-${Math.random()}`
+  text: string;
+  speaker: string;     // Normalised: 'INTERVIEWER' | 'CANDIDATE' | 'MIXED'
+  timestamp?: number;  // Date.now() — used for display timestamps
+}
+
+export interface AIResultMessage {
+  type: 'AI_RESULT';
+  questions: any[];  // FollowUpQuestion[] from the AI Intelligence service
+  alerts: any[];     // ContradictionAlert[] from the AI Intelligence service
+  score: number;     // overall_score 0–10
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exhaustive discriminated union — covers every message in the system
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ExtensionMessage =
+  | TranscriptSegmentMessage
+  | ToggleRecordingMessage
+  | ResumeDataMessage
+  | GetStatusMessage
+  | GetTranscriptMessage
+  | TranscriptMessage
+  | AIResultMessage;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type guard — narrows a message by its discriminant
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function isMessageOfType<T extends ExtensionMessage['type']>(
+  message: ExtensionMessage,
+  type: T
 ): message is Extract<ExtensionMessage, { type: T }> {
-    return message.type === type;
+  return message.type === type;
 }
