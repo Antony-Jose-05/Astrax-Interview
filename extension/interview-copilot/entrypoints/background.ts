@@ -63,12 +63,30 @@ export default defineBackground(() => {
 
   function broadcastAIResult(result: any) {
     console.log("[background] Broadcasting AI_RESULT to UI...");
-    const message = {
-      type: "AI_RESULT",
-      questions: result.follow_up_questions || [],
-      alerts: result.contradictions || [],
-      score: result.score || 0
-    };
+    console.log("[background] Raw AI result:", result); // 
+    console.log("[background] Questions count:", result.follow_up_questions?.length); // 
+    console.log("[background] Contradictions count:", result.contradictions?.length); // 
+    
+    // Handle both raw AI results and pre-formatted messages
+    let message;
+    if (result.questions && result.alerts) {
+      // Already formatted message (from generateFollowUps)
+      message = result;
+      console.log("[background] Using pre-formatted message"); // 
+    } else {
+      // Raw AI result (from sendOptimizedAIPayload)
+      message = {
+        type: "AI_RESULT",
+        questions: result.follow_up_questions || [],
+        alerts: result.contradictions || [],
+        score: result.score || 0
+      };
+      console.log("[background] Using raw AI result"); // 
+    }
+
+    console.log("[background] Broadcasting message:", message); // 
+    console.log("[background] Final questions count:", message.questions.length); // 
+    console.log("[background] Final alerts count:", message.alerts.length); // 
 
     // @ts-ignore
     chrome.runtime.sendMessage(message).catch(() => {
@@ -127,7 +145,7 @@ export default defineBackground(() => {
   }
 
   function generateFollowUps(question: string) {
-    console.log("[background] 🤖 GENERATING FOLLOW-UP QUESTIONS");
+    console.log("[background] 🤖 GENERATING FOLLOW-UP QUESTIONS (INTERVIEWER MODE - NO CONTRADICTIONS)");
     
     if (!storedResume) {
       console.warn("[background] No resume data available for follow-up generation");
@@ -136,17 +154,27 @@ export default defineBackground(() => {
 
     const resume = storedResume?.resume || storedResume || {};
     
-    // Use existing AI analysis for follow-up generation
-    analyzeAnswer(`Interviewer: ${question}`, resume)
+    // Use different topic for interviewer questions - NO contradiction detection
+    analyzeAnswer(`Interviewer: ${question}`, resume, undefined, "interviewer_question")
       .then((analysis) => {
-        console.log("🤖 [BACKGROUND] FOLLOW-UP QUESTIONS GENERATED:", analysis);
+        console.log("🤖 [BACKGROUND] FOLLOW-UP QUESTIONS GENERATED (INTERVIEWER ONLY):", analysis);
+        console.log("🤖 [BACKGROUND] Analysis.follow_up_questions:", analysis.follow_up_questions); // 
+        console.log("🤖 [BACKGROUND] Analysis.contradictions:", analysis.contradictions); // 
+        console.log("🤖 [BACKGROUND] Analysis.follow_up_questions length:", analysis.follow_up_questions?.length); // 
+        console.log("🤖 [BACKGROUND] Analysis.contradictions length:", analysis.contradictions?.length); // 
 
-        broadcastAIResult({
+        const messageToSend = {
           type: "AI_RESULT",
           questions: analysis.follow_up_questions || [],
-          alerts: analysis.contradictions || [],
+          alerts: [], // ❌ NO CONTRADICTIONS FOR INTERVIEWER QUESTIONS
           score: analysis.score || 0,
-        });
+        };
+        
+        console.log("🤖 [BACKGROUND] Message to send (INTERVIEWER MODE):", messageToSend); // 
+        console.log("🤖 [BACKGROUND] Questions length in message:", messageToSend.questions.length); // 
+        console.log("🤖 [BACKGROUND] Alerts length in message (SHOULD BE 0):", messageToSend.alerts.length); // 
+
+        broadcastAIResult(messageToSend);
       })
       .catch((err) => {
         console.error("❌ [BACKGROUND] FOLLOW-UP GENERATION FAILED:", err);
@@ -192,7 +220,7 @@ export default defineBackground(() => {
           generateFollowUps(text);
         }
         
-        if (role === "candidate" && isFinal) {
+        if (role === "candidate") {
           console.log("[AI] Evaluating candidate answer");
           latestAnswer = text;
           setTimeout(() => {
@@ -219,7 +247,7 @@ export default defineBackground(() => {
           generateFollowUps(text);
         }
         
-        if (role === "candidate" && isFinal) {
+        if (role === "candidate") {
           console.log("[AI] Evaluating candidate answer");
           latestAnswer = text;
           setTimeout(() => {
@@ -250,7 +278,7 @@ export default defineBackground(() => {
           generateFollowUps(text);
         }
         
-        if (role === "candidate" && isFinal) {
+        if (role === "candidate") {
           console.log("[AI] Evaluating candidate answer");
           latestAnswer = text;
           setTimeout(() => {

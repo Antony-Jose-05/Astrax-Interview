@@ -48,3 +48,8 @@ async def transcribe_audio(
     
     # 3. Return the JSON format the extension's background.ts expects
     return {"transcript": transcript}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

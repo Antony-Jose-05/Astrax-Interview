@@ -67,11 +67,15 @@ export const QuestionsPanel: React.FC = () => {
       const message = event.detail;
       if (message.questions) {
         console.log("[QuestionsPanel] Updating questions:", message.questions.length);
+        console.log("[QuestionsPanel] Raw questions data:", message.questions); // DEBUG
+        
         const newQuestions: FollowUpQuestion[] = message.questions.map((q: any, i: number) => {
           // Safely handle different question formats
           let questionText = "";
           let intent = "technical";
           let triggeredBy = "";
+          
+          console.log(`[QuestionsPanel] Processing question ${i}:`, q); // DEBUG
           
           if (typeof q === "string") {
             questionText = q;
@@ -81,6 +85,8 @@ export const QuestionsPanel: React.FC = () => {
             triggeredBy = q.triggered_by || "";
           }
           
+          console.log(`[QuestionsPanel] Extracted questionText: "${questionText}"`); // DEBUG
+          
           return {
             id: `ai-${Date.now()}-${i}`,
             question: questionText,
@@ -88,7 +94,9 @@ export const QuestionsPanel: React.FC = () => {
             category: intent as "technical" | "behavioral" | "clarification" | "deep-dive",
             rationale: triggeredBy ? `Triggered by: "${triggeredBy}"` : "Live AI suggestion",
           };
-        }).filter(q => q.question); // Filter out empty questions
+        }).filter((q: FollowUpQuestion) => q.question); // Filter out empty questions
+        
+        console.log("[QuestionsPanel] Final filtered questions:", newQuestions.length); // DEBUG
         setQuestions(newQuestions);
       }
     };

@@ -73,14 +73,22 @@ export const AlertPanel: React.FC = () => {
       const message = event.detail;
       if (message.alerts) {
         console.log("[AlertPanel] Updating alerts:", message.alerts.length);
-        const newAlerts: MismatchAlert[] = message.alerts.map((a: any, i: number) => ({
-          id: `alert-${Date.now()}-${i}`,
-          field: "AI Detection",
-          resumeClaim: a.resume_claim || "No direct resume claim found.",
-          candidateClaim: a.interview_claim || a.quote || "N/A",
-          confidenceScore: 100,
-          severity: (a.severity === "high" || a.severity === "medium" || a.severity === "low") ? a.severity : "medium",
-        }));
+        console.log("[AlertPanel] Raw alerts data:", message.alerts); // DEBUG
+        
+        const newAlerts: MismatchAlert[] = message.alerts.map((a: any, i: number) => {
+          console.log(`[AlertPanel] Processing alert ${i}:`, a); // DEBUG
+          
+          return {
+            id: `alert-${Date.now()}-${i}`,
+            field: "AI Detection",
+            resumeClaim: a.resume_claim || "No direct resume claim found.",
+            candidateClaim: a.interview_claim || a.quote || "N/A",
+            confidenceScore: 100,
+            severity: (a.severity === "high" || a.severity === "medium" || a.severity === "low") ? a.severity : "medium",
+          };
+        });
+        
+        console.log("[AlertPanel] Final alerts array:", newAlerts.length); // DEBUG
         setAlerts(newAlerts);
       }
     };

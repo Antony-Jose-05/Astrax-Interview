@@ -15,50 +15,46 @@ A comprehensive suite for real-time interview assistance, featuring automated tr
 
 ---
 
-## ⚡ Quick Start
+### 1. Mandatory: Install Dependencies
+Run this in the root folder before starting:
+```bash
+pip install -r requirements.txt
+```
 
-### 1. Requirements
+### 2. Startup Guide (One-Liners)
 
-- Python 3.10+
-- Node.js 18+
-- [Groq API Key](https://console.groq.com/keys) (Required for ultra-fast transcription and analysis)
-
-### 2. Backend Setup
-
-You will need three terminals to run the backend services.
+Open **4 Terminals** in the root directory:
 
 #### Terminal 1: SSI-Service (Transcription)
 ```bash
-cd backend/SSI-Service
-# create .env with GROQ_API_KEY
-pip install -r requirements.txt
-uvicorn main:app --port 8000
+cd backend/SSI-Service && uvicorn main:app --port 8000 --reload
 ```
 
-#### Terminal 2: Resume Parser
+#### Terminal 2: Resume Parser (Uploads)
 ```bash
-cd backend/"resume parser"
-# create .env
-pip install -r requirements.txt
-uvicorn main:app --port 8001
+cd backend/resume_parser && uvicorn main:app --port 8001 --reload
 ```
 
-#### Terminal 3: AI-Intelligence (Analysis)
+#### Terminal 3: AI-Intelligence (Reasoning)
+> [!IMPORTANT]
+> This uses **api:app** (not main:app).
 ```bash
-cd backend/AI-Intelligence
-# create .env
-pip install -r requirements.txt
-uvicorn api:app --port 8002
+cd backend/AI-Intelligence && uvicorn api:app --port 8002 --reload
 ```
 
-### 3. Extension Setup
-
-#### Terminal 4: Frontend
+#### Terminal 4: Browser Extension
 ```bash
-cd extension/interview-copilot
-npm install
-npm run dev
+cd extension/interview-copilot && npm run dev
 ```
+
+---
+
+## 🎙️ Native Caption Scraping (New Mode)
+To use the new ultra-accurate scraping mode:
+1. Join your **Google Meet**.
+2. **Turn on Captions (CC)** in the Google Meet bottom bar.
+3. Open the Side Panel and click **Start Tracking**.
+4. The extension will now capture text instantly with 100% accuracy and speaker diarization.
 
 ---
 

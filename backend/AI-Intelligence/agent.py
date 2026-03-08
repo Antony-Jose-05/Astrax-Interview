@@ -11,9 +11,9 @@ from typing import Any
 from dotenv import load_dotenv
 from rag_context import build_rag_context
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "llama-3.1-8b-instant"
 _client = None
 
 
@@ -82,6 +82,31 @@ Return this exact JSON:
   ],
   "vagueness_detected": true | false,
   "vagueness_reason": "string or null"
+}}"""
+
+
+INTERVIEWER_ASSIST_PROMPT = """You are an AI interview copilot helping an interviewer.
+
+Based on the transcript, suggest intelligent follow-up questions that the interviewer can ask the candidate.
+
+TRANSCRIPT:
+{transcript}
+
+Focus on:
+- Deeper technical understanding
+- Edge cases and real-world scenarios  
+- Tradeoffs and design decisions
+- Problem-solving approach
+
+Return JSON:
+{{
+  "follow_up_questions": [
+    {{
+      "question": "string",
+      "intent": "probe_depth | test_edge_case | challenge_assumption",
+      "triggered_by": "topic or concept"
+    }}
+  ]
 }}"""
 
 
@@ -160,7 +185,14 @@ logger = logging.getLogger(__name__)
 
 def call_llm(prompt: str, temperature: float = 0.3) -> dict[str, Any]:
     """Call Groq LLM and return parsed JSON response. Handles API and parsing errors."""
+    print(f"🤖 [AI-Intelligence] 🧠 CALLING LLM FUNCTION...")
+    print(f"🤖 [AI-Intelligence] 📝 Prompt length: {len(prompt)} chars")
+    print(f"🤖 [AI-Intelligence] 🌡️ Temperature: {temperature}")
+    print(f"🤖 [AI-Intelligence] 📋 Model: {MODEL}")
+    print(f"🤖 [AI-Intelligence] 📤 Prompt preview: {prompt[:200]}...")
+    
     try:
+        print(f"🤖 [AI-Intelligence] 📞 MAKING GROQ API CALL...")
         response = get_client().chat.completions.create(
             model=MODEL,
             temperature=temperature,
@@ -170,12 +202,25 @@ def call_llm(prompt: str, temperature: float = 0.3) -> dict[str, Any]:
                 {"role": "user", "content": prompt},
             ],
         )
+        print(f"🤖 [AI-Intelligence] ✅ GROQ API SUCCESS!")
+        
         raw = response.choices[0].message.content
-        return json.loads(raw)
+        print(f"🤖 [AI-Intelligence] 📥 Raw response length: {len(raw)} chars")
+        print(f"🤖 [AI-Intelligence] 📥 Raw response preview: {raw[:200]}...")
+        
+        parsed = json.loads(raw)
+        print(f"🤖 [AI-Intelligence] ✅ JSON PARSE SUCCESS!")
+        print(f"🤖 [AI-Intelligence] 📊 Parsed response type: {type(parsed)}")
+        print(f"🤖 [AI-Intelligence] 📊 Parsed response keys: {list(parsed.keys())}")
+        print(f"🤖 [AI-Intelligence] 🏁 LLM FUNCTION COMPLETE!")
+        
+        return parsed
     except json.JSONDecodeError as e:
+        print(f"🤖 [AI-Intelligence] ❌ JSON PARSE ERROR: {e}")
         logger.error(f"LLM returned invalid JSON: {e}")
         return {"error": "LLM response was not valid JSON", "raw": raw}
     except Exception as e:
+        print(f"🤖 [AI-Intelligence] ❌ LLM CALL FAILED: {e}")
         logger.error(f"LLM call failed: {e}")
         return {"error": str(e)}
 
@@ -217,6 +262,11 @@ def generate_followup_questions(
 ) -> dict:
     """Generate intelligent follow-up questions based on candidate's latest answer.
     Uses RAG to inject only the most relevant resume context."""
+    # Handle empty latest_answer (interviewer-only transcripts)
+    if not latest_answer or not latest_answer.strip():
+        latest_answer = transcript[-500:] if len(transcript) > 500 else transcript
+        topic = "general"  # Use general topic when no specific answer
+    
     # RAG: retrieve only the resume sections relevant to the current topic
     rag_context = build_rag_context(resume, topic + " " + latest_answer)
     resume_summary = summarize_resume(resume) + "\n\nRelevant Resume Context:\n" + rag_context
@@ -256,12 +306,13 @@ def evaluate_candidate(resume: dict, transcript: str, role: str = "Software Engi
 def validate_inputs(resume: dict, transcript: str, latest_answer: str) -> list[str]:
     """Validate inputs before running the pipeline. Returns list of error messages."""
     errors = []
-    if not resume or not isinstance(resume, dict):
-        errors.append("Resume must be a non-empty dictionary")
+    # Allow empty resume for basic follow-up generation
+    # Only skip contradiction detection if resume is missing
     if not transcript or not transcript.strip():
         errors.append("Transcript must be a non-empty string")
-    if not latest_answer or not latest_answer.strip():
-        errors.append("Latest answer must be a non-empty string")
+    # Allow empty latest_answer for interviewer-only transcripts (for generating follow-up questions)
+    # if not latest_answer or not latest_answer.strip():
+    #     errors.append("Latest answer must be a non-empty string")
     return errors
 
 
@@ -280,16 +331,60 @@ def analyze_interview(
     - contradiction_alerts
     - candidate_evaluation
     """
+    print(f"🧠 [AI-Intelligence] 🚀 ANALYZE_INTERVIEW FUNCTION STARTED!")
+    print(f"🧠 [AI-Intelligence] 📋 INPUT PARAMETERS:")
+    print(f"  Resume type: {type(resume)}")
+    print(f"  Resume keys: {list(resume.keys()) if resume else 'none'}")
+    print(f"  Transcript length: {len(transcript)} chars")
+    print(f"  Transcript preview: {transcript[:300]}...")
+    print(f"  Latest answer: {latest_answer[:200]}...")
+    print(f"  Topic: {topic}")
+    print(f"  Role: {role}")
+    
     # Validate inputs
+    print(f"🧠 [AI-Intelligence] 🔍 VALIDATING INPUTS...")
     errors = validate_inputs(resume, transcript, latest_answer)
+    print(f"🧠 [AI-Intelligence] Validation errors: {errors}")
     if errors:
+        print(f"🧠 [AI-Intelligence] ❌ VALIDATION FAILED!")
         return {"error": "Invalid inputs", "details": errors}
+    print(f"🧠 [AI-Intelligence] ✅ VALIDATION PASSED!")
 
+    # 🚀 NEW: Choose AI mode based on topic parameter
+    if topic == "candidate_answer":
+        print(f"🧠 [AI-Intelligence] 🎯 MODE: CANDIDATE ANSWER ANALYSIS")
+        prompt = FOLLOWUP_PROMPT
+    else:
+        print(f"🧠 [AI-Intelligence] 🎯 MODE: INTERVIEWER ASSISTANT")
+        prompt = FOLLOWUP_PROMPT
+
+    print(f"🧠 [AI-Intelligence] 📝 GENERATING FOLLOW-UP QUESTIONS...")
     followups = generate_followup_questions(resume, transcript, latest_answer, topic)
-    contradictions = detect_contradictions(resume, transcript)
+    print(f"🧠 [AI-Intelligence] ✅ FOLLOW-UP QUESTIONS GENERATED:")
+    print(f"  Followups type: {type(followups)}")
+    print(f"  Followups keys: {list(followups.keys())}")
+    print(f"  Followups content: {followups}")
+    
+    # Skip contradiction detection if resume is empty
+    if not resume or not resume.keys():
+        print(f"🧠 [AI-Intelligence] ⚠️ NO RESUME - SKIPPING CONTRADICTION DETECTION")
+        contradictions = {"contradictions": [], "contradiction_count": 0, "overall_consistency_score": 10.0}
+    else:
+        print(f"🧠 [AI-Intelligence] 🔍 DETECTING CONTRADICTIONS...")
+        contradictions = detect_contradictions(resume, transcript)
+        print(f"🧠 [AI-Intelligence] ✅ CONTRADICTIONS DETECTED:")
+        print(f"  Contradictions type: {type(contradictions)}")
+        print(f"  Contradictions keys: {list(contradictions.keys())}")
+        print(f"  Contradictions content: {contradictions}")
+    
+    print(f"🧠 [AI-Intelligence] 📊 EVALUATING CANDIDATE...")
     evaluation = evaluate_candidate(resume, transcript, role)
+    print(f"🧠 [AI-Intelligence] ✅ CANDIDATE EVALUATION COMPLETE:")
+    print(f"  Evaluation type: {type(evaluation)}")
+    print(f"  Evaluation keys: {list(evaluation.keys())}")
+    print(f"  Evaluation content: {evaluation}")
 
-    return {
+    result = {
         "analysis": {
             "follow_up_questions": followups.get("follow_up_questions", []),
             "vagueness_detected": followups.get("vagueness_detected", False),
@@ -309,3 +404,14 @@ def analyze_interview(
             },
         }
     }
+    
+    print(f"🧠 [AI-Intelligence] ✅ FINAL RESULT CONSTRUCTED:")
+    print(f"  Result type: {type(result)}")
+    print(f"  Result keys: {list(result.keys())}")
+    print(f"  Analysis keys: {list(result['analysis'].keys())}")
+    print(f"  Follow-up questions count: {len(result['analysis'].get('follow_up_questions', []))}")
+    print(f"  Contradictions count: {len(result['analysis'].get('contradiction_alerts', {}).get('items', []))}")
+    print(f"  Overall score: {result['analysis'].get('candidate_evaluation', {}).get('overall_score', 'N/A')}")
+    print(f"🧠 [AI-Intelligence] 🏁 ANALYZE_INTERVIEW FUNCTION COMPLETE!")
+    
+    return result

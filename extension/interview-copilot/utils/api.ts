@@ -96,7 +96,8 @@ export async function sendAudio(
 export async function analyzeAnswer(
     transcript: string,
     resume: any,
-    latest_answer?: string // Add optional parameter for latest answer
+    latest_answer?: string, // Add optional parameter for latest answer
+    topic: string = "general" // Add topic parameter with default
 ): Promise<AnalyzeAnswerResponse> {
     const endpoint = "/analyze-answer";
 
@@ -105,7 +106,7 @@ export async function analyzeAnswer(
         transcript,
         resume,
         latest_answer: latest_answer || null, // Use provided latest_answer
-        topic: "general",
+        topic: topic, // Use provided topic
         role: "Software Engineer"
     };
 
