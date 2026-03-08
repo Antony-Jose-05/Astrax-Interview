@@ -2,329 +2,309 @@
  * background.ts — WXT Background Service Worker
  *
  * Responsibilities:
- *  1. Receive transcript segments from content.ts
- *  2. Track interviewer questions and candidate answers
- *  3. Trigger AI pipelines
- *  4. Send AI results to UI
+ *  1. Receive transcript segments from content.ts (two sources):
+ *       • TRANSCRIPT_SEGMENT — from Google Meet DOM caption scraper (fast, free)
+ *       • AUDIO_CHUNK        — from Zoom audio capture, forwarded to STT :8000
+ *  2. Deduplicate and debounce transcript segments
+ *  3. Track interviewer questions and candidate answers
+ *  4. Trigger AI analysis pipeline at the right moments
+ *  5. Broadcast TRANSCRIPT and AI_RESULT to the side panel UI
  */
 
-import { analyzeAnswer } from "../utils/api";
+import { sendAudio, analyzeAnswer } from '../utils/api';
 
 export default defineBackground(() => {
-  console.log("[background] Service worker started");
+  console.log('[background] Service worker started.');
 
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════════
   // STATE
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  let storedResume: any = null;
-  let latestQuestion: string = "";
-  let latestAnswer: string = "";
-  let aiRunning: boolean = false;
-  let transcriptHistory: any[] = [];
+  let storedResume   : any    = null;
+  let latestQuestion : string = '';
+  let latestAnswer   : string = '';
+  let aiRunning      : boolean = false;
 
-  // Smart transcript deduplication
-  let transcriptMap: Map<string, { text: string; timestamp: number }> = new Map();
-  let transcriptSilenceTimer: NodeJS.Timeout | null = null;
-  const TRANSCRIPT_SILENCE_DELAY: number = 1200; // 1.2 seconds
-  const MIN_TRANSCRIPT_LENGTH: number = 3; // Ignore very short fragments
+  // Full conversation history — returned to TranscriptPanel on GET_TRANSCRIPT
+  let transcriptHistory: Array<{ id: string; text: string; speaker: string; timestamp: number }> = [];
 
-  // ===============================
-  // HELPERS
-  // ===============================
+  // Per-speaker deduplication map — prevents re-broadcasting the same growing sentence
+  const transcriptMap  = new Map<string, { text: string; timestamp: number }>();
+  let   silenceTimer   : ReturnType<typeof setTimeout> | null = null;
 
-  function broadcastTranscript(text: string, speaker: string = "candidate") {
-    console.log(`[background] Broadcasting TRANSCRIPT: "${text.slice(0, 30)}..." from ${speaker}`);
+  // Zoom audio sequencing — tracks next expected chunk to forward in order
+  let zoomSequenceQueue = new Map<number, string>(); // sequenceId → base64 dataUrl
+  let nextZoomSequence  = 0;
 
+  const SILENCE_DELAY       = 1_200; // ms — wait for speaker to pause before finalising
+  const MIN_TEXT_LENGTH     = 3;     // ignore single-character noise fragments
+  const ZOOM_FLUSH_TIMEOUT  = 3_000; // ms — max wait before flushing out-of-order Zoom chunks
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BROADCAST HELPERS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function broadcastTranscript(text: string, speaker: string): void {
     const msg = {
-      id: `msg-${Date.now()}-${Math.random()}`,
-      text: text,
-      speaker: speaker.toUpperCase()
+      type     : 'TRANSCRIPT' as const,
+      id       : `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      text,
+      speaker  : speaker.toUpperCase(),
+      timestamp: Date.now(),
     };
 
     transcriptHistory.push(msg);
 
     // @ts-ignore
-    chrome.runtime.sendMessage(
-      {
-        type: "TRANSCRIPT",
-        ...msg
-      },
-      () => {
-        // @ts-ignore
-        if (chrome.runtime.lastError) {
-          console.debug("[background] Transcript broadcast failed (UI closed).");
-        } else {
-          console.log("[background] Transcript broadcast successful.");
-        }
+    chrome.runtime.sendMessage(msg, () => {
+      // @ts-ignore
+      if (chrome.runtime.lastError) {
+        console.debug('[background] Transcript broadcast failed (UI not open).');
       }
-    );
+    });
   }
 
-  function broadcastAIResult(result: any) {
-    console.log("[background] Broadcasting AI_RESULT to UI...");
-    const message = {
-      type: "AI_RESULT",
-      questions: result.follow_up_questions || [],
-      alerts: result.contradictions || [],
-      score: result.score || 0
+  function broadcastAIResult(result: any): void {
+    const msg = {
+      type     : 'AI_RESULT' as const,
+      questions: result.follow_up_questions ?? [],
+      alerts   : result.contradictions       ?? [],
+      score    : result.score                ?? 0,
     };
 
     // @ts-ignore
-    chrome.runtime.sendMessage(message).catch(() => {
-      console.debug("[background] AI result not delivered via runtime.");
-    });
-
-    // @ts-ignore
-    chrome.tabs.query({}, (tabs: any[]) => {
-      tabs.forEach((tab: any) => {
-        if (tab.id) {
-          // @ts-ignore
-          chrome.tabs.sendMessage(tab.id, message).catch(() => {
-            // Ignore errors - some tabs may not have content scripts
-          });
-        }
-      });
+    chrome.runtime.sendMessage(msg, () => {
+      // @ts-ignore
+      if (chrome.runtime.lastError) {
+        console.debug('[background] AI result broadcast failed (UI not open).');
+      }
     });
   }
 
-  async function sendOptimizedAIPayload() {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TRANSCRIPT DEDUPLICATION & SILENCE DETECTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called for every TRANSCRIPT_SEGMENT received from the Meet scraper.
+   *
+   * Google Meet captions grow in-place as a speaker talks — e.g.:
+   *   "Tell me"  →  "Tell me about"  →  "Tell me about yourself"
+   *
+   * We store the latest version per speaker and wait SILENCE_DELAY ms after
+   * the last update before treating the sentence as final and broadcasting it.
+   * This avoids spamming the UI with partial sentences.
+   */
+  function updateTranscript(text: string, speaker: string): void {
+    if (text.length < MIN_TEXT_LENGTH) return;
+
+    const key      = speaker.toLowerCase();
+    const now      = Date.now();
+    const existing = transcriptMap.get(key);
+
+    // Always update to the latest text for this speaker
+    transcriptMap.set(key, { text, timestamp: now });
+
+    // Reset silence timer — restart countdown from now
+    if (silenceTimer) clearTimeout(silenceTimer);
+
+    silenceTimer = setTimeout(() => {
+      // Determine role from speaker name
+      // "You" in Google Meet = the local user = the interviewer running this tool
+      const role = speaker === 'You' ? 'interviewer' : 'candidate';
+
+      console.log(`[background] ✅ Final: "${text}" | role=${role}`);
+      broadcastTranscript(text, role);
+      transcriptMap.delete(key); // clear so next sentence starts fresh
+
+      // Trigger AI pipeline based on role
+      if (role === 'interviewer') {
+        latestQuestion = text;
+      }
+
+      if (role === 'candidate') {
+        latestAnswer = text;
+        // Delay slightly to allow any trailing words to arrive
+        setTimeout(sendOptimizedAIPayload, 2_000);
+      }
+    }, SILENCE_DELAY);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ZOOM: AUDIO CHUNK FORWARDING → STT SERVICE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Zoom audio chunks arrive as base64 data URLs from content.ts.
+   * We forward them to SSI-Service (:8000) which runs Groq Whisper.
+   * The transcript returned is then processed through the same pipeline
+   * as Meet captions, but attributed to 'mixed' (both speakers).
+   *
+   * WHY queue and order? MediaRecorder slices can arrive slightly out of order.
+   * We hold chunks until the expected sequence is available, then flush.
+   */
+  async function handleZoomAudioChunk(audioDataUrl: string, sequenceId: number): Promise<void> {
+    zoomSequenceQueue.set(sequenceId, audioDataUrl);
+
+    // Flush all available in-order chunks
+    while (zoomSequenceQueue.has(nextZoomSequence)) {
+      const dataUrl = zoomSequenceQueue.get(nextZoomSequence)!;
+      zoomSequenceQueue.delete(nextZoomSequence);
+      const currentSeq = nextZoomSequence;
+      nextZoomSequence++;
+
+      try {
+        // Convert base64 data URL back to Blob for the STT service
+        const base64 = dataUrl.split(',')[1];
+        const binary  = atob(base64);
+        const bytes   = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'audio/webm' });
+
+        console.log(`[background] Forwarding Zoom chunk ${currentSeq} (${blob.size}B) to STT.`);
+        const result = await sendAudio(blob, currentSeq, 'mixed');
+
+        if (result.transcript?.trim()) {
+          console.log(`[background] Zoom STT result: "${result.transcript}"`);
+          // Zoom transcripts don't have speaker attribution — treat as candidate
+          // (The interviewer using this tool would be on the same mic on Zoom)
+          updateTranscript(result.transcript.trim(), 'candidate');
+        }
+      } catch (err) {
+        console.error(`[background] STT failed for Zoom chunk ${currentSeq}:`, err);
+      }
+    }
+
+    // Safety flush: if a chunk went missing, don't block forever
+    setTimeout(() => {
+      if (zoomSequenceQueue.size > 0) {
+        console.warn(`[background] Flushing ${zoomSequenceQueue.size} stale Zoom chunks.`);
+        for (const [seq, dataUrl] of [...zoomSequenceQueue.entries()].sort(([a], [b]) => a - b)) {
+          zoomSequenceQueue.delete(seq);
+          nextZoomSequence = seq + 1;
+          // Re-enqueue as if it arrived now — will be flushed in next call
+          handleZoomAudioChunk(dataUrl, seq);
+        }
+      }
+    }, ZOOM_FLUSH_TIMEOUT);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // AI PIPELINE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function sendOptimizedAIPayload(): Promise<void> {
+    // Guard: don't stack concurrent AI calls
     if (aiRunning) {
-      console.log("[background] AI already running - skipping");
+      console.log('[background] AI already running — skipping.');
       return;
     }
 
+    // Guard: need both halves of the exchange to analyse
     if (!latestQuestion || !latestAnswer) {
-      console.warn("[background] Missing question or answer, skipping AI payload");
+      console.warn('[background] Missing question or answer — skipping AI call.');
       return;
     }
 
     aiRunning = true;
+    const resume   = storedResume?.resume ?? storedResume ?? {};
+    const transcript = `Interviewer: ${latestQuestion}\nCandidate: ${latestAnswer.trim()}`;
 
-    const resume = storedResume?.resume || storedResume || {};
-    const cleanedAnswer = latestAnswer.trim();
-    
-    // Build full transcript for AI service
-    const transcript = `Interviewer: ${latestQuestion}\nCandidate: ${cleanedAnswer}`;
-    
-    console.log("[background] 🚀 SENDING OPTIMIZED AI PAYLOAD");
-    console.log("[background] Payload:", {
-      transcript,
-      resume: resume,
-      latest_answer: cleanedAnswer
-    });
-    
+    console.log('[background] 🚀 Sending AI payload.');
+
     try {
-      const analysis = await analyzeAnswer(transcript, resume, cleanedAnswer);
-      console.log("🤖 [BACKGROUND] AI RESULT RECEIVED:", analysis);
-
+      const analysis = await analyzeAnswer(transcript, resume, latestAnswer.trim());
+      console.log('[background] 🤖 AI result received:', analysis);
       broadcastAIResult(analysis);
     } catch (err) {
-      console.error("❌ [BACKGROUND] AI CALL FAILED:", err);
+      console.error('[background] ❌ AI call failed:', err);
     } finally {
       aiRunning = false;
     }
   }
 
-  function generateFollowUps(question: string) {
-    console.log("[background] 🤖 GENERATING FOLLOW-UP QUESTIONS");
-    
-    if (!storedResume) {
-      console.warn("[background] No resume data available for follow-up generation");
-      return;
-    }
-
-    const resume = storedResume?.resume || storedResume || {};
-    
-    // Use existing AI analysis for follow-up generation
-    analyzeAnswer(`Interviewer: ${question}`, resume)
-      .then((analysis) => {
-        console.log("🤖 [BACKGROUND] FOLLOW-UP QUESTIONS GENERATED:", analysis);
-
-        broadcastAIResult({
-          type: "AI_RESULT",
-          questions: analysis.follow_up_questions || [],
-          alerts: analysis.contradictions || [],
-          score: analysis.score || 0,
-        });
-      })
-      .catch((err) => {
-        console.error("❌ [BACKGROUND] FOLLOW-UP GENERATION FAILED:", err);
-      });
-  }
-
-  function updateTranscript(text: string, speaker: string, isFinal: boolean = false) {
-    const key = speaker.toLowerCase();
-    const now = Date.now();
-    
-    // Ignore very short fragments
-    if (text.length < MIN_TRANSCRIPT_LENGTH) {
-      console.log(`[background] 🚫 IGNORING SHORT FRAGMENT: "${text}"`);
-      return;
-    }
-    
-    // Check if this is a longer version of previous transcript OR completely different
-    const existing = transcriptMap.get(key);
-    const isLongerVersion = existing && text.length > existing.text.length && 
-      (text.includes(existing.text) || existing.text.includes(text.substring(0, Math.floor(existing.text.length * 0.8))));
-    
-    if (isLongerVersion) {
-      console.log(`[background] 📝 UPDATING TRANSCRIPT: "${existing.text}" → "${text}"`);
-      transcriptMap.set(key, { text, timestamp: now });
-      
-      // Clear silence timer and reset
-      if (transcriptSilenceTimer) {
-        clearTimeout(transcriptSilenceTimer);
-      }
-      
-      // Set new timer to emit final transcript after silence
-      transcriptSilenceTimer = setTimeout(() => {
-        // Map speaker to role for AI triggering
-        const role = speaker === "You" ? "interviewer" : "candidate";
-        
-        console.log(`[background] ✅ FINAL TRANSCRIPT: "${text}" from ${role}`);
-        broadcastTranscript(text, role);
-        
-        // Track latest question/answer for AI evaluation
-        if (role === "interviewer" && isFinal) {
-          latestQuestion = text;
-          console.log("[background] Question detected:", latestQuestion);
-          generateFollowUps(text);
-        }
-        
-        if (role === "candidate" && isFinal) {
-          console.log("[AI] Evaluating candidate answer");
-          latestAnswer = text;
-          setTimeout(() => {
-            sendOptimizedAIPayload();
-          }, 2000);
-        }
-      }, TRANSCRIPT_SILENCE_DELAY);
-    } else if (!existing) {
-      // New transcript segment
-      console.log(`[background] 🆕 NEW TRANSCRIPT: "${text}" from ${speaker}`);
-      transcriptMap.set(key, { text, timestamp: now });
-      
-      // Set timer to emit after silence
-      transcriptSilenceTimer = setTimeout(() => {
-        // Map speaker to role for AI triggering
-        const role = speaker === "You" ? "interviewer" : "candidate";
-        
-        console.log(`[background] ✅ FINAL TRANSCRIPT: "${text}" from ${role}`);
-        broadcastTranscript(text, role);
-        
-        if (role === "interviewer") {
-          latestQuestion = text;
-          console.log("[background] Question detected:", latestQuestion);
-          generateFollowUps(text);
-        }
-        
-        if (role === "candidate" && isFinal) {
-          console.log("[AI] Evaluating candidate answer");
-          latestAnswer = text;
-          setTimeout(() => {
-            sendOptimizedAIPayload();
-          }, 2000);
-        }
-      }, TRANSCRIPT_SILENCE_DELAY);
-    } else if (existing && existing.text !== text) {
-      // Different text - treat as new segment
-      console.log(`[background] 🔄 DIFFERENT TRANSCRIPT: "${existing.text}" → "${text}"`);
-      transcriptMap.set(key, { text, timestamp: now });
-      
-      // Clear and reset timer
-      if (transcriptSilenceTimer) {
-        clearTimeout(transcriptSilenceTimer);
-      }
-      
-      transcriptSilenceTimer = setTimeout(() => {
-        // Map speaker to role for AI triggering
-        const role = speaker === "You" ? "interviewer" : "candidate";
-        
-        console.log(`[background] ✅ FINAL TRANSCRIPT: "${text}" from ${role}`);
-        broadcastTranscript(text, role);
-        
-        if (role === "interviewer") {
-          latestQuestion = text;
-          console.log("[background] Question detected:", latestQuestion);
-          generateFollowUps(text);
-        }
-        
-        if (role === "candidate" && isFinal) {
-          console.log("[AI] Evaluating candidate answer");
-          latestAnswer = text;
-          setTimeout(() => {
-            sendOptimizedAIPayload();
-          }, 2000);
-        }
-      }, TRANSCRIPT_SILENCE_DELAY);
-    } else {
-      // Same text, ignore
-      console.log(`[background] 🚫 IGNORING DUPLICATE: "${text}"`);
-    }
-  }
-
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════════
   // MESSAGE HANDLER
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════════
 
   // @ts-ignore
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log(`🎯 [BACKGROUND] 📨 MESSAGE RECEIVED!`);
-    console.log(`🎯 [BACKGROUND] Message type: ${message.type}`);
-    console.log(`🎯 [BACKGROUND] Message keys: ${Object.keys(message)}`);
+  chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
 
     switch (message.type) {
-      case "TRANSCRIPT_SEGMENT": {
-        const { text, speaker, isFinal } = message;
 
-        if (!text || text.trim().length === 0) {
-          sendResponse({ ok: true });
+      // ── From: Google Meet DOM scraper in content.ts ──────────────────────
+      case 'TRANSCRIPT_SEGMENT': {
+        const { text, speaker } = message;
+        if (!text?.trim()) { sendResponse({ ok: true }); return false; }
+
+        console.log(`[background] 📥 SEGMENT "${text.slice(0, 40)}..." | speaker=${speaker}`);
+        updateTranscript(text.trim(), speaker);
+
+        sendResponse({ ok: true });
+        return false;
+      }
+
+      // ── From: Zoom audio capture in content.ts ───────────────────────────
+      case 'AUDIO_CHUNK': {
+        const { audioDataUrl, sequence_id } = message;
+
+        if (!audioDataUrl) {
+          console.warn('[background] AUDIO_CHUNK missing audioDataUrl — ignoring.');
+          sendResponse({ ok: false, reason: 'missing audioDataUrl' });
           return false;
         }
 
-        console.log(`[background] 📥 RECEIVED Segment from Scraper: "${text.slice(0, 30)}..." | speaker=${speaker} | isFinal=${isFinal}`);
+        console.log(`[background] 🎵 Zoom AUDIO_CHUNK seq=${sequence_id}`);
 
-        updateTranscript(text.trim(), speaker, isFinal);
+        // Async — keep message channel open
+        handleZoomAudioChunk(audioDataUrl, sequence_id ?? 0)
+          .then(() => sendResponse({ ok: true }))
+          .catch((err) => sendResponse({ ok: false, reason: err.message }));
 
-        sendResponse({ ok: true });
-        return false;
+        return true; // keep channel open for async response
       }
 
-      case "RESUME_DATA": {
-        console.log("[background] 📋 RECEIVED RESUME DATA");
+      // ── From: ResumePanel ─────────────────────────────────────────────────
+      case 'RESUME_DATA': {
+        console.log('[background] 📋 Resume data received and stored.');
         storedResume = message.data;
-        console.log("[background] Resume data stored successfully.");
-
-        // @ts-ignore
-        chrome.runtime.sendMessage({ type: "RESUME_DATA", data: storedResume }).catch(() => {
-          // Ignore error if sidepanel is closed
-        });
-
         sendResponse({ ok: true });
         return false;
       }
 
-      case "GET_STATUS": {
-        sendResponse({ 
-          ok: true, 
-          storedResume,
-          transcriptHistory
-        });
-        return false;
-      }
-
-      case "GET_TRANSCRIPT": {
+      // ── From: TranscriptPanel (hydrate on mount) ──────────────────────────
+      case 'GET_TRANSCRIPT': {
         sendResponse({ ok: true, history: transcriptHistory });
         return false;
       }
 
+      // ── From: sidebar/App.tsx (check service state) ───────────────────────
+      case 'GET_STATUS': {
+        sendResponse({
+          ok          : true,
+          storedResume,
+          transcriptLength: transcriptHistory.length,
+          isRecording : false, // content.ts owns recording state; background doesn't track it
+        });
+        return false;
+      }
+
       default: {
-        console.warn("[background] Unknown message type:", (message as any).type);
-        sendResponse({ ok: false, reason: "unknown message type" });
+        console.warn('[background] Unknown message type:', message.type);
+        sendResponse({ ok: false, reason: 'unknown message type' });
         return false;
       }
     }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SIDE PANEL SETUP
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // @ts-ignore
+  chrome.action.onClicked.addListener((tab: any) => {
+    // @ts-ignore
+    chrome.sidePanel.open({ windowId: tab.windowId });
   });
 
   // @ts-ignore
@@ -332,21 +312,8 @@ export default defineBackground(() => {
     // @ts-ignore
     chrome.sidePanel
       .setOptions({ path: 'sidepanel.html', enabled: true })
-      .catch((error: any) => console.error(error));
+      .catch((err: any) => console.error('[background] sidePanel.setOptions error:', err));
   });
 
-  // Open side panel on action click
-  // @ts-ignore
-  chrome.sidePanel.setOptions({
-    path: 'sidepanel.html',
-    enabled: true
-  });
-  
-  // @ts-ignore
-  chrome.action.onClicked.addListener((tab: any) => {
-    // @ts-ignore
-    chrome.sidePanel.open({ windowId: tab.windowId });
-  });
-
-  console.log("[background] Service worker initialised and ready (SidePanel enabled).");
+  console.log('[background] ✅ Ready — listening for Meet captions and Zoom audio.');
 });
