@@ -1,4 +1,5 @@
 import "../../assets/tailwind.css";
+import "./transcript.css";
 import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 
@@ -28,6 +29,30 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [sttStatus, setSttStatus] = useState<"online" | "offline">("offline");
   const [aiStatus, setAiStatus] = useState<"online" | "offline">("offline");
+  const [aiQuestions, setAiQuestions] = useState<any[]>([]);
+  const [aiAlerts, setAiAlerts] = useState<any[]>([]);
+  const [aiScore, setAiScore] = useState<number>(0);
+
+  // Listen for AI_RESULT messages at the top level
+  useEffect(() => {
+    const handler = (message: any) => {
+      console.log("[App] Message received:", message.type, message);
+      if (message.type === "AI_RESULT") {
+        console.log("[App] AI_RESULT received:", message);
+        setAiQuestions(message.questions || []);
+        setAiAlerts(message.alerts || []);
+        setAiScore(message.score || 0);
+        
+        // Dispatch custom event for child components
+        window.dispatchEvent(new CustomEvent('AI_RESULT', { detail: message }));
+      }
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(handler);
+      return () => chrome.runtime.onMessage.removeListener(handler);
+    }
+  }, []);
 
   useEffect(() => {
     const checkStatus = async () => {

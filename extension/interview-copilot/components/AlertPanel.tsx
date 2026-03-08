@@ -68,9 +68,10 @@ export const AlertPanel: React.FC = () => {
   const [dismissed, setDismissed] = useState<string[]>([]);
 
   React.useEffect(() => {
-    const handler = (message: any) => {
-      console.log("[AlertPanel] Message received:", message.type, message);
-      if (message.type === "AI_RESULT" && message.alerts) {
+    const handler = (event: CustomEvent) => {
+      console.log("[AlertPanel] AI_RESULT custom event received:", event.detail);
+      const message = event.detail;
+      if (message.alerts) {
         console.log("[AlertPanel] Updating alerts:", message.alerts.length);
         const newAlerts: MismatchAlert[] = message.alerts.map((a: any, i: number) => ({
           id: `alert-${Date.now()}-${i}`,
@@ -84,10 +85,8 @@ export const AlertPanel: React.FC = () => {
       }
     };
 
-    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener(handler);
-      return () => chrome.runtime.onMessage.removeListener(handler);
-    }
+    window.addEventListener('AI_RESULT', handler as EventListener);
+    return () => window.removeEventListener('AI_RESULT', handler as EventListener);
   }, []);
 
   const visible = alerts.filter(a => !dismissed.includes(a.id));

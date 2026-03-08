@@ -21,210 +21,176 @@ function detectPlatform(): MeetingPlatform {
   }
   return null;
 }
+let captionObserver: MutationObserver | null = null;
+let isScraping = false;
+let intervalId: any = null;
+let lastFullText = "";
+let persistentSpeaker = "Speaker";
+let lastContainer: Element | null = null;
+let lastSpeech = "";
+/** Fingerprint set — absolutely prevents the same speaker+text being sent twice */
+const sentFingerprints = new Set<string>();
+/** Debounce timer for MutationObserver — prevents hundreds of calls/sec */
+let observerDebounce: any = null;
 
-const CHUNK_INTERVAL_MS = 5_000;
-const AUDIO_MIME_TYPE = "audio/webm;codecs=opus";
+/**
+ * CaptionScraper - Watches the DOM for Google Meet captions.
+ */
+function startScraping(): void {
+  if (isScraping) return;
+  console.log("[content] Starting Caption Scraper Hook...");
 
-let micStream: MediaStream | null = null;
-let tabAudioStream: MediaStream | null = null;
-let audioContext: AudioContext | null = null;
-let mixedDestination: MediaStreamAudioDestinationNode | null = null;
-let sequenceId = 0;
-let isRecording = false;
+  const platform = detectPlatform();
+  if (platform !== "google_meet") {
+    console.warn("[content] Caption scraping only implemented for Google Meet currently.");
+    return;
+  }
 
-function recordStream(stream: MediaStream): void {
-  if (!isRecording) return;
+  isScraping = true;
 
-  const mimeType = MediaRecorder.isTypeSupported(AUDIO_MIME_TYPE)
-    ? AUDIO_MIME_TYPE
-    : "";
-
-  const recorder = new MediaRecorder(
-    stream,
-    mimeType ? { mimeType } : {}
-  );
-
-  const chunks: Blob[] = [];
-
-  recorder.ondataavailable = (e: BlobEvent) => {
-    if (e.data.size > 0) {
-      console.log(`[content] Audio data available: ${e.data.size} bytes`);
-      chunks.push(e.data);
+  setInterval(() => {
+    if (isScraping) {
+       console.log("%c[content] 💓 Scraper Heartbeat (Active)", "color: #95a5a6; font-size: 10px;");
     }
-  };
+  }, 5000);
 
-  recorder.onstop = async () => {
-    const currentId = sequenceId++;
 
-    const blob = new Blob(chunks, {
-      type: mimeType || "audio/webm",
-    });
+  // Your name as shown by Google Meet — used to classify your role as INTERVIEWER
+  const MY_NAME = "BAEVIN";
 
-    console.log(
-      `[content] Mixed chunk complete | seq=${currentId} | size=${blob.size}B`
+  // Tracks last sent text per speaker to deduplicate growing sentences
+  const lastSpeechBySpeaker = new Map<string, string>();
+
+  const performScrape = () => {
+    // Google Meet renders each caption utterance as a block inside [jsname="YSxPC"]
+    // We iterate all blocks and extract speaker + text from separate child nodes
+    const captionRoot =
+      document.querySelector('[jsname="YSxPC"]') ||
+      document.querySelector('div[role="region"][aria-label="Captions"]') ||
+      document.querySelector('[aria-live="polite"]');
+
+    if (!captionRoot) return;
+
+    // Detect container replacement — reset state
+    if (captionRoot !== lastContainer) {
+      lastContainer = captionRoot;
+      lastFullText = "";
+      lastSpeech = "";
+      lastSpeechBySpeaker.clear();
+      console.log("%c[content] 🔄 Caption container replaced", "color: #e67e22;");
+    }
+
+    // Each caption utterance is a child block within the root
+    // Try known Meet inner selectors; fall back to iterating direct children
+    const SPEAKER_SELECTORS = [".zs7s8d", ".CNusmb", "[data-sender-name]", ".NWpY1d"];
+    const TEXT_SELECTORS    = [".CNusmb", ".VbkSUe", ".P7ZZmd", "span"];
+
+    const blocks = Array.from(captionRoot.querySelectorAll("div")).filter(el =>
+      el.children.length >= 1 && el.innerText?.trim().length > 0
     );
 
-    if (blob.size < 500) { 
-      console.warn(`[content] Chunk too small (${blob.size}B) — likely empty header. Skipping.`);
-    } else {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string;
-        chrome.runtime.sendMessage(
-          {
-            type: "AUDIO_CHUNK",
-            audioDataUrl: dataUrl,
-            sequence_id: currentId,
-            speaker: "mixed", // Unified tag for the simplified pipeline
-          },
-          (response) => {
-             if (chrome.runtime.lastError) {
-               console.debug(`[content] Broadcast error:`, chrome.runtime.lastError.message);
-             }
+    for (const block of blocks) {
+      // Try to find a dedicated speaker node
+      let speakerName = "";
+      for (const sel of SPEAKER_SELECTORS) {
+        const node = block.querySelector(sel);
+        if (node && node.textContent?.trim()) {
+          speakerName = node.textContent.trim();
+          break;
+        }
+      }
+
+      // Try to find the text node (different from the speaker)
+      let captionText = "";
+      for (const sel of TEXT_SELECTORS) {
+        const nodes = Array.from(block.querySelectorAll(sel));
+        for (const node of nodes) {
+          const t = node.textContent?.trim() || "";
+          if (t && t !== speakerName && t.length > 2) {
+            captionText = t;
+            break;
           }
-        );
-      };
-      reader.readAsDataURL(blob);
-    }
+        }
+        if (captionText) break;
+      }
 
-    if (isRecording) {
-      setTimeout(() => recordStream(stream), 100); 
+      // Fallback: use full block text, strip speaker prefix
+      if (!captionText) {
+        const full = block.innerText?.trim() || "";
+        captionText = speakerName
+          ? full.replace(speakerName, "").trim()
+          : full;
+      }
+
+      if (!captionText || captionText.length < 2) continue;
+
+      // Use persistent speaker if we couldn't detect one
+      if (!speakerName) speakerName = persistentSpeaker;
+      else persistentSpeaker = speakerName;
+
+      // Delta deduplication per speaker
+      const lastForSpeaker = lastSpeechBySpeaker.get(speakerName) || "";
+      let delta = captionText;
+
+      if (lastForSpeaker && captionText.startsWith(lastForSpeaker)) {
+        delta = captionText.substring(lastForSpeaker.length).trim();
+      } else if (lastForSpeaker && captionText.length < lastForSpeaker.length) {
+        delta = captionText; // full rewrite
+      }
+
+      lastSpeechBySpeaker.set(speakerName, captionText);
+
+      if (!delta || delta.length < 2) continue;
+
+      // Absolute dedup: never send the same speaker+text fingerprint twice
+      const fingerprint = `${speakerName}::${delta}`;
+      if (sentFingerprints.has(fingerprint)) continue;
+      sentFingerprints.add(fingerprint);
+      // Prune set to prevent unbounded memory growth
+      if (sentFingerprints.size > 500) {
+        const first = sentFingerprints.values().next().value;
+        if (first) sentFingerprints.delete(first);
+      }
+
+      console.log(`[content] 🎙️ ${speakerName}: ${delta}`);
+      // @ts-ignore
+      chrome.runtime.sendMessage({
+        type: "TRANSCRIPT_SEGMENT",
+        text: delta,
+        speaker: speakerName,
+        isFinal: false
+      });
     }
   };
 
-  recorder.onerror = (e) => console.error(`[content] Mixed recorder error:`, e);
-  recorder.start();
+  // Poll every 1000ms (interval is for safety; observer handles real-time)
+  intervalId = setInterval(performScrape, 1000);
 
-  setTimeout(() => {
-    if (recorder.state !== "inactive") {
-      recorder.stop();
-    }
-  }, CHUNK_INTERVAL_MS);
+  // Debounced MutationObserver — waits 300ms after last DOM change before firing
+  // This prevents the observer firing hundreds of times/sec during Meet DOM updates
+  captionObserver = new MutationObserver(() => {
+    if (observerDebounce) clearTimeout(observerDebounce);
+    observerDebounce = setTimeout(performScrape, 300);
+  });
+  captionObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
 }
 
-async function startRecording(): Promise<void> {
-  console.log("[content] Initializing Mixed-Audio Pipeline (Mic + Tab)…");
-  
-  try {
-    // 1. Get Microphone
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: false,
-    });
-    console.log("[content] Microphone access granted.");
-
-    // 2. Get Tab Audio
-    tabAudioStream = await (navigator.mediaDevices as any).getDisplayMedia({
-      video: { 
-        displaySurface: "browser",
-        width: { max: 1 }, 
-        height: { max: 1 },
-        frameRate: { max: 1 }
-      },
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: true
-      },
-      systemAudio: "include",
-      preferCurrentTab: false,
-      selfBrowserSurface: "include",
-      monitorTypeSurfaces: "include"
-    });
-    console.log("[content] Tab audio access granted.");
-
-    // 3. Setup Audio Mixing
-    audioContext = new AudioContext(); 
-    mixedDestination = audioContext.createMediaStreamDestination();
-
-    // Defensive track check
-    const micTracks = micStream.getAudioTracks();
-    const tabTracks = tabAudioStream.getAudioTracks();
-
-    if (micTracks.length === 0) console.warn("[content] No mic audio tracks found!");
-    if (tabTracks.length === 0) {
-      console.warn("[content] NO TAB AUDIO DETECTED! Ensure 'Share tab audio' was checked in the picker.");
-      // Optional: alert the user or show a UI warning
-    }
-
-    const micSource = audioContext.createMediaStreamSource(micStream);
-    const tabSource = audioContext.createMediaStreamSource(
-      tabTracks.length > 0 ? tabAudioStream : new MediaStream() // Fallback to empty stream if no tab audio
-    );
-    
-    micSource.connect(mixedDestination);
-    if (tabTracks.length > 0) {
-      tabSource.connect(mixedDestination);
-    }
-
-    await audioContext.resume();
-    console.log(`[content] Pipeline active. Rate=${audioContext.sampleRate}Hz, MicTracks=${micTracks.length}, TabTracks=${tabTracks.length}`);
-
-    isRecording = true;
-    
-    // Start unified recording loop
-    recordStream(mixedDestination.stream);
-
-    // Add track-end monitoring
-    tabAudioStream.getTracks().forEach(track => {
-      track.onended = () => {
-        console.warn(`[content] Tab Audio Track (${track.kind}) ENDED unexpectedly.`);
-      };
-    });
-
-    // Keep-alive video for Tab Audio tracks
-    if (tabAudioStream.getVideoTracks().length > 0) {
-      const dummyVideo = document.createElement("video");
-      dummyVideo.id = "astrax-keep-alive-video";
-      dummyVideo.style.position = "fixed";
-      dummyVideo.style.top = "0";
-      dummyVideo.style.left = "0";
-      dummyVideo.style.width = "1px";
-      dummyVideo.style.height = "1px";
-      dummyVideo.style.opacity = "0.01";
-      dummyVideo.style.pointerEvents = "none";
-      dummyVideo.style.zIndex = "-999";
-      
-      dummyVideo.srcObject = tabAudioStream;
-      document.body.appendChild(dummyVideo); 
-      
-      dummyVideo.play().catch(err => console.error("[content] Keep-alive video play error:", err));
-      (window as any)._dummyVideo = dummyVideo; 
-    }
-
-  } catch (err) {
-    console.error("[content] Audio mix failed:", err);
-    stopRecording();
-    throw err;
+function stopScraping(): void {
+  isScraping = false;
+  if (intervalId) {
+    clearInterval(intervalId);
+    intervalId = null;
   }
-}
-
-function stopRecording(): void {
-  isRecording = false;
-  
-  const stopTracks = (stream: MediaStream | null) => {
-    stream?.getTracks().forEach(t => t.stop());
-  };
-
-  stopTracks(micStream);
-  stopTracks(tabAudioStream);
-
-  if (audioContext) {
-    audioContext.close().catch(console.error);
-    audioContext = null;
+  if (captionObserver) {
+    captionObserver.disconnect();
+    captionObserver = null;
   }
-
-  if ((window as any)._dummyVideo) {
-    (window as any)._dummyVideo.srcObject = null;
-    (window as any)._dummyVideo.remove();
-    delete (window as any)._dummyVideo;
-  }
-
-  micStream = null;
-  tabAudioStream = null;
-  mixedDestination = null;
-
-  console.log("[content] Mixed recording stopped and cleaned up.");
+  lastFullText = "";
+  console.log("[content] Caption scraper stopped.");
 }
 
 export default defineContentScript({
@@ -235,30 +201,29 @@ export default defineContentScript({
     console.log("[content] Content script loaded and main() running.");
 
     // Listen for start/stop commands from the popup
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // @ts-ignore
+    chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
       console.log("[content] Message received:", message.type, message);
       if (message.type === "TOGGLE_RECORDING") {
         const platform = detectPlatform();
         if (!platform) {
-          console.warn("[content] Cannot start recording: Not a supported meeting page.");
+          console.warn("[content] Cannot start scraping: Not a supported meeting page.");
           sendResponse({ active: false, error: "Not a supported meeting page" });
           return true;
         }
 
-        if (message.active && !isRecording) {
-          console.log("[content] Starting recording session...");
-          startRecording()
-            .then(() => {
-              console.log("[content] Recording session active.");
-              sendResponse({ active: true });
-            })
-            .catch((err) => {
-              console.error("[content] Failed to start recording:", err);
-              sendResponse({ active: false, error: err.message });
-            });
+        if (message.active && !isScraping) {
+          console.log("[content] Starting scraping session...");
+          try {
+            startScraping();
+            sendResponse({ active: true });
+          } catch (err: any) {
+            console.error("[content] Failed to start scraping:", err);
+            sendResponse({ active: false, error: err.message });
+          }
         } else {
-          console.log("[content] Stopping recording session...");
-          stopRecording();
+          console.log("[content] Stopping scraping session...");
+          stopScraping();
           sendResponse({ active: false });
         }
         return true;
@@ -274,8 +239,8 @@ export default defineContentScript({
     console.log(`[content] Meeting platform detected: ${platform}`);
 
     window.addEventListener("beforeunload", () => {
-      console.log("[content] Page unloading — stopping recording.");
-      stopRecording();
+      console.log("[content] Page unloading — stopping scraper.");
+      stopScraping();
     });
   },
 });

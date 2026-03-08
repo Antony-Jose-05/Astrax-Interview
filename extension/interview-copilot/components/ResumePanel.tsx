@@ -60,12 +60,20 @@ export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data: initialData
       console.log("[ResumePanel] Message received:", message.type);
       if (message.type === "RESUME_DATA" && message.data) {
         const r = message.data.resume || message.data;
+        
+        // Normalize projects to ensure all required fields exist
+        const normalizedProjects = (r.projects || []).map((project: any) => ({
+          name: project.name || "Untitled Project",
+          description: project.description || "",
+          tech: Array.isArray(project.tech) ? project.tech : []
+        }));
+        
         const mappedData: ResumeData = {
           name: r.full_name || r.name || "Candidate",
           title: r.current_job_title || r.title || "Software Engineer",
           yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
-          skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
-          projects: r.projects || [],
+          skills: [...new Set([...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])])],
+          projects: normalizedProjects,
         };
         setData(mappedData);
       }
@@ -77,12 +85,20 @@ export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data: initialData
       chrome.runtime.sendMessage({ type: "GET_STATUS" }, (res) => {
         if (res?.storedResume) {
           const r = res.storedResume.resume || res.storedResume;
-           const mappedData: ResumeData = {
+          
+          // Normalize projects to ensure all required fields exist
+          const normalizedProjects = (r.projects || []).map((project: any) => ({
+            name: project.name || "Untitled Project",
+            description: project.description || "",
+            tech: Array.isArray(project.tech) ? project.tech : []
+          }));
+          
+          const mappedData: ResumeData = {
             name: r.full_name || r.name || "Candidate",
             title: r.current_job_title || r.title || "Software Engineer",
             yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
             skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
-            projects: r.projects || [],
+            projects: normalizedProjects,
           };
           setData(mappedData);
         }
@@ -101,8 +117,8 @@ export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data: initialData
     formData.append("file", file);
 
     try {
-      console.log("[ResumePanel] Uploading resume to Port 8003...");
-      const res = await fetch("http://127.0.0.1:8003/upload-resume", {
+      console.log("[ResumePanel] Uploading resume to Port 8001...");
+      const res = await fetch("http://127.0.0.1:8001/upload-resume", {
         method: "POST",
         body: formData,
       });
@@ -114,18 +130,25 @@ export const ResumePanel: React.FC<{ data?: ResumeData }> = ({ data: initialData
       
       const r = result.resume || result;
       
+      // Normalize projects to ensure all required fields exist
+      const normalizedProjects = (r.projects || []).map((project: any) => ({
+        name: project.name || "Untitled Project",
+        description: project.description || "",
+        tech: Array.isArray(project.tech) ? project.tech : []
+      }));
+      
       // Update local UI
       const mappedData: ResumeData = {
         name: r.full_name || r.name || "Candidate",
         title: r.current_job_title || r.title || "Software Engineer",
         yearsOfExperience: r.total_years_experience || r.yearsOfExperience || 0,
-        skills: [...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])],
-        projects: r.projects || [],
+        skills: [...new Set([...(r.skills || []), ...(r.programming_languages || []), ...(r.tools_and_technologies || [])])],
+        projects: normalizedProjects,
       };
       setData(mappedData);
     } catch (err) {
       console.error("[ResumePanel] Upload failed:", err);
-      alert("Failed to upload resume. Please make sure the service on Port 8003 is running.");
+      alert("Failed to upload resume. Please make sure the service on Port 8001 is running.");
     }
   };
 

@@ -8,8 +8,8 @@
 // Configuration
 // ─────────────────────────────────────────────
 
-const STT_API_BASE = "http://127.0.0.1:8002"; // STT Service  → /transcribe
-const AI_API_BASE = "http://127.0.0.1:8001"; // AI Service   → /analyze-answer
+const STT_API_BASE = "http://127.0.0.1:8000"; // STT Service  → /transcribe
+const AI_API_BASE = "http://127.0.0.1:8002"; // AI Service   → /analyze-answer
 
 // ─────────────────────────────────────────────
 // Response shape contracts
@@ -95,18 +95,49 @@ export async function sendAudio(
  */
 export async function analyzeAnswer(
     transcript: string,
-    resume: any
+    resume: any,
+    latest_answer?: string // Add optional parameter for latest answer
 ): Promise<AnalyzeAnswerResponse> {
     const endpoint = "/analyze-answer";
+
+    // Send all fields that the AI backend expects
+    const requestBody = {
+        transcript,
+        resume,
+        latest_answer: latest_answer || null, // Use provided latest_answer
+        topic: "general",
+        role: "Software Engineer"
+    };
+
+    console.log(`🌐 [API] 📤 SENDING TO AI ANALYSIS:`);
+    console.log(`  Endpoint: ${AI_API_BASE}${endpoint}`);
+    console.log(`  Request body keys: ${Object.keys(requestBody)}`);
+    console.log(`  Transcript length: ${transcript.length} chars`);
+    console.log(`  Resume present: ${!!resume}`);
+    console.log(`  Full request: ${JSON.stringify(requestBody, null, 2)}`);
 
     const response = await fetch(`${AI_API_BASE}${endpoint}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({ transcript, resume }),
+        body: JSON.stringify(requestBody),
     });
 
     await assertOk(response, endpoint);
-    return response.json() as Promise<AnalyzeAnswerResponse>;
+    
+    console.log(`🌐 [API] 📥 AI ANALYSIS RESPONSE RECEIVED:`);
+    console.log(`  Response status: ${response.status}`);
+    console.log(`  Response OK: ${response.ok}`);
+    
+    const result = await response.json();
+    console.log(`🌐 [API] ✅ PARSED RESPONSE:`);
+    console.log(`  Response type: ${typeof result}`);
+    console.log(`  Response keys: ${Object.keys(result)}`);
+    console.log(`  Follow-up questions: ${result.follow_up_questions?.length || 0}`);
+    console.log(`  Contradictions: ${result.contradictions?.length || 0}`);
+    console.log(`  Score: ${result.score}`);
+    console.log(`  Full response: ${JSON.stringify(result, null, 2)}`);
+    
+    return result as Promise<AnalyzeAnswerResponse>;
 }

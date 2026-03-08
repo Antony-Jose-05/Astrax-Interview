@@ -71,10 +71,10 @@ function App() {
     // Ping services to check status
     const checkStatus = async () => {
       try {
-        const sttReq = await fetch("http://localhost:8002/").catch(() => null);
+        const sttReq = await fetch("http://localhost:8000/").catch(() => null);
         setSttStatus(sttReq ? "online" : "offline");
         
-        const aiReq = await fetch("http://localhost:8001/").catch(() => null);
+        const aiReq = await fetch("http://localhost:8002/").catch(() => null);
         setAiStatus(aiReq ? "online" : "offline");
       } catch (e) {}
     };

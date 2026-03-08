@@ -34,9 +34,14 @@ const defaultQuestions: FollowUpQuestion[] = [
 
 const categoryConfig: Record<string, { color: string; label: string }> = {
   "deep-dive": { color: "text-purple-400 bg-purple-500/15 border-purple-500/30", label: "DEEP DIVE" },
-  technical: { color: "text-blue-400 bg-blue-500/15 border-blue-500/30", label: "TECHNICAL" },
-  clarification: { color: "text-amber-400 bg-amber-500/15 border-amber-500/30", label: "CLARIFY" },
-  behavioral: { color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30", label: "BEHAVIORAL" },
+  "technical": { color: "text-blue-400 bg-blue-500/15 border-blue-500/30", label: "TECHNICAL" },
+  "clarification": { color: "text-amber-400 bg-amber-500/15 border-amber-500/30", label: "CLARIFY" },
+  "behavioral": { color: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30", label: "BEHAVIORAL" },
+  "probe_depth": { color: "text-blue-400 bg-blue-500/15 border-blue-500/30", label: "DEEP DIVE" },
+  "verify_claim": { color: "text-yellow-400 bg-yellow-500/15 border-yellow-500/30", label: "VERIFY" },
+  "test_edge_case": { color: "text-red-400 bg-red-500/15 border-red-500/30", label: "EDGE CASE" },
+  "challenge_assumption": { color: "text-purple-400 bg-purple-500/15 border-purple-500/30", label: "CHALLENGE" },
+  "default": { color: "text-slate-400 bg-slate-500/15 border-slate-500/30", label: "FOLLOW-UP" }
 };
 
 function vaguenessColor(score: number): string {
@@ -55,26 +60,41 @@ export const QuestionsPanel: React.FC = () => {
   const [questions, setQuestions] = useState<FollowUpQuestion[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
 
+  // Listen for AI_RESULT custom events from App component
   React.useEffect(() => {
-    const handler = (message: any) => {
-      console.log("[QuestionsPanel] Message received:", message.type, message);
-      if (message.type === "AI_RESULT" && message.questions) {
+    const handler = (event: CustomEvent) => {
+      console.log("[QuestionsPanel] AI_RESULT custom event received:", event.detail);
+      const message = event.detail;
+      if (message.questions) {
         console.log("[QuestionsPanel] Updating questions:", message.questions.length);
-        const newQuestions: FollowUpQuestion[] = message.questions.map((q: any, i: number) => ({
-          id: `ai-${Date.now()}-${i}`,
-          question: q.question || q,
-          vaguenessScore: 0, 
-          category: q.intent || "technical",
-          rationale: q.triggered_by ? `Triggered by: "${q.triggered_by}"` : "Live AI suggestion",
-        }));
+        const newQuestions: FollowUpQuestion[] = message.questions.map((q: any, i: number) => {
+          // Safely handle different question formats
+          let questionText = "";
+          let intent = "technical";
+          let triggeredBy = "";
+          
+          if (typeof q === "string") {
+            questionText = q;
+          } else if (q && typeof q === "object") {
+            questionText = q.question || q.text || "";
+            intent = q.intent || "technical";
+            triggeredBy = q.triggered_by || "";
+          }
+          
+          return {
+            id: `ai-${Date.now()}-${i}`,
+            question: questionText,
+            vaguenessScore: 0, 
+            category: intent as "technical" | "behavioral" | "clarification" | "deep-dive",
+            rationale: triggeredBy ? `Triggered by: "${triggeredBy}"` : "Live AI suggestion",
+          };
+        }).filter(q => q.question); // Filter out empty questions
         setQuestions(newQuestions);
       }
     };
 
-    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener(handler);
-      return () => chrome.runtime.onMessage.removeListener(handler);
-    }
+    window.addEventListener('AI_RESULT', handler as EventListener);
+    return () => window.removeEventListener('AI_RESULT', handler as EventListener);
   }, []);
 
   const handleCopy = (id: string, text: string) => {
@@ -95,7 +115,8 @@ export const QuestionsPanel: React.FC = () => {
 
       <div className="space-y-3">
         {questions.map((q, i) => {
-          const catCfg = categoryConfig[q.category];
+          // Safe fallback for unknown intents - prevents crashes
+          const catCfg = categoryConfig[q.category] || categoryConfig["default"];
           return (
             <div
               key={q.id}
@@ -131,15 +152,17 @@ export const QuestionsPanel: React.FC = () => {
               </div>
 
               {/* Rationale */}
-              <p className="text-[10px] text-slate-500 italic mb-2">⚡ {q.rationale}</p>
+              <p className="text-[10px] text-slate-500 italic mb-2">⚡ {q.rationale || "Live AI suggestion"}</p>
 
-              {/* Question text */}
-              <p className="text-slate-200 text-xs leading-relaxed mb-2">"{q.question}"</p>
+              {/* Question text - safe fallback */}
+              <p className="text-slate-200 text-xs leading-relaxed mb-2">
+                "{q.question || "Unknown question"}"
+              </p>
 
               {/* Actions */}
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleCopy(q.id, q.question)}
+                  onClick={() => handleCopy(q.id, q.question || "Unknown question")}
                   className="flex-1 text-[10px] py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/20 hover:border-indigo-500/50 transition-all font-semibold"
                 >
                   {copied === q.id ? "✓ COPIED" : "COPY QUESTION"}
